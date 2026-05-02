@@ -15,8 +15,9 @@ jobs:
 
     - name: Install Theos
       run: |
-        bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
-        echo "THEOS=/opt/theos" >> $GITHUB_ENV
+        export THEOS=/opt/theos
+        sudo git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
 
     - name: Install insert_dylib
       run: |
@@ -27,8 +28,9 @@ jobs:
 
     - name: Build Tweak
       run: |
+        export THEOS=/opt/theos
         cd InstallRedirect
-        make clean
+        make clean || true
         make
 
     - name: Extract IPA
