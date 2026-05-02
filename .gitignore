@@ -1,0 +1,40 @@
+# 临时文件
+temp_ipa/
+temp_ipa_modify/
+temp_modify/
+*.backup
+
+# 编译产物
+.theos/
+*.deb
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+*.lnk
+
+# 其他 IPA 文件(只上传 2.ipa)
+1.ipa
+3.ipa
+4.ipa
+5.ipa
+6.ipa
+7.ipa
+8.ipa
+9.ipa
+10.ipa
+11.ipa
+12.ipa
+13.ipa
+14.ipa
+15.ipa
+16.ipa
+17.ipa
+18.ipa
+
+# 文档(可选,如果不想上传)
+# *.md
+
+# Claude 配置
+.claude/

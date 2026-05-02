@@ -1,0 +1,70 @@
+name: Build Modified IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Install Theos
+      run: |
+        bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+        echo "THEOS=/opt/theos" >> $GITHUB_ENV
+
+    - name: Install insert_dylib
+      run: |
+        git clone https://github.com/Tyilo/insert_dylib
+        cd insert_dylib
+        xcodebuild
+        sudo cp build/Release/insert_dylib /usr/local/bin/
+
+    - name: Build Tweak
+      run: |
+        cd InstallRedirect
+        make clean
+        make
+
+    - name: Extract IPA
+      run: |
+        unzip -q 2.ipa -d temp
+
+    - name: Copy dylib to app
+      run: |
+        cp InstallRedirect/.theos/obj/debug/InstallRedirect.dylib temp/Payload/DumpApp.app/
+
+    - name: Inject dylib
+      run: |
+        insert_dylib @executable_path/InstallRedirect.dylib temp/Payload/DumpApp.app/DumpApp temp/Payload/DumpApp.app/DumpApp --all-yes
+
+    - name: Remove old signature
+      run: |
+        rm -rf temp/Payload/DumpApp.app/_CodeSignature
+
+    - name: Repackage IPA
+      run: |
+        cd temp
+        zip -qr ../2_modified.ipa Payload
+
+    - name: Upload modified IPA
+      uses: actions/upload-artifact@v3
+      with:
+        name: modified-ipa
+        path: 2_modified.ipa
+        retention-days: 7
+
+    - name: Create Release
+      if: github.ref == 'refs/heads/main'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v1.0.${{ github.run_number }}
+        name: Modified IPA v1.0.${{ github.run_number }}
+        files: 2_modified.ipa
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

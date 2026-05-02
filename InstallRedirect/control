@@ -1,0 +1,9 @@
+Package: com.yourname.installredirect
+Name: InstallRedirect
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 修改"去安装"按钮跳转到"文件-已定制"页面
+Maintainer: Your Name
+Author: Your Name
+Section: Tweaks
+Depends: mobilesubstrate
