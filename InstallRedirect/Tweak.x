@@ -1,148 +1,109 @@
-#import <UIKit/UIKit.h>
-#import <substrate.h>
+﻿#import <UIKit/UIKit.h>
+#import <objc/message.h>
 
-// Hook 目标: DAInstallConfigView 类的"去安装"按钮点击事件
-// 目的: 将跳转改为"文件-已定制"页面
+static UIViewController *IRFindViewController(UIViewController *root, NSString *className) {
+    if (!root) return nil;
+    if ([NSStringFromClass([root class]) isEqualToString:className]) return root;
 
-@interface DAInstallConfigView : UIView
-- (void)installButtonClicked:(id)sender;
-@end
-
-@interface UIViewController (Helper)
-- (UIViewController *)topViewController;
-@end
-
-@implementation UIViewController (Helper)
-- (UIViewController *)topViewController {
-    UIViewController *topVC = self;
-    while (topVC.presentedViewController) {
-        topVC = topVC.presentedViewController;
+    if ([root isKindOfClass:[UINavigationController class]]) {
+        for (UIViewController *vc in ((UINavigationController *)root).viewControllers) {
+            UIViewController *found = IRFindViewController(vc, className);
+            if (found) return found;
+        }
     }
-    return topVC;
+
+    if ([root isKindOfClass:[UITabBarController class]]) {
+        for (UIViewController *vc in ((UITabBarController *)root).viewControllers) {
+            UIViewController *found = IRFindViewController(vc, className);
+            if (found) return found;
+        }
+    }
+
+    for (UIViewController *vc in root.childViewControllers) {
+        UIViewController *found = IRFindViewController(vc, className);
+        if (found) return found;
+    }
+
+    return nil;
 }
-@end
 
-%hook DAInstallConfigView
-
-// Hook "去安装"按钮的点击方法
-- (void)installButtonClicked:(id)sender {
-    NSLog(@"[InstallRedirect] 拦截到'去安装'按钮点击");
-
-    // 获取当前的视图控制器
-    UIResponder *responder = self;
-    UIViewController *currentVC = nil;
-
-    while (responder) {
-        if ([responder isKindOfClass:[UIViewController class]]) {
-            currentVC = (UIViewController *)responder;
+static UIViewController *IRRootViewController(void) {
+    UIWindow *keyWindow = nil;
+    for (UIWindow *window in [UIApplication sharedApplication].windows) {
+        if (window.isKeyWindow) {
+            keyWindow = window;
             break;
         }
-        responder = [responder nextResponder];
     }
+    if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
+    return keyWindow.rootViewController;
+}
 
-    if (!currentVC) {
-        NSLog(@"[InstallRedirect] 错误: 无法获取当前视图控制器");
-        %orig; // 执行原始方法
+static void IRSwitchSelectAppToSigned(UIViewController *selectVC) {
+    if (!selectVC) return;
+
+    if ([selectVC respondsToSelector:@selector(signSuccess)]) {
+        ((void (*)(id, SEL))objc_msgSend)(selectVC, @selector(signSuccess));
+        NSLog(@"[InstallRedirect] called DASelectAppVC signSuccess");
         return;
     }
 
-    // 方案1: 尝试通过 TabBarController 切换到"文件"tab
-    UITabBarController *tabBarController = currentVC.tabBarController;
-    if (tabBarController) {
-        NSLog(@"[InstallRedirect] 找到 TabBarController, 尝试切换到文件tab");
-
-        // 切换到"文件"tab (通常是第1或第2个tab,需要根据实际情况调整)
-        // 可以尝试 index 0, 1, 2 来找到正确的tab
-        for (NSInteger i = 0; i < tabBarController.viewControllers.count; i++) {
-            UIViewController *vc = tabBarController.viewControllers[i];
-            NSString *className = NSStringFromClass([vc class]);
-            NSLog(@"[InstallRedirect] Tab %ld: %@", (long)i, className);
-
-            // 查找包含 "File" 或 "文件" 的控制器
-            if ([className containsString:@"File"] ||
-                [className containsString:@"Mine"] ||
-                [className containsString:@"List"]) {
-
-                tabBarController.selectedIndex = i;
-                NSLog(@"[InstallRedirect] 切换到 tab %ld", (long)i);
-
-                // 获取该tab的导航控制器
-                UINavigationController *navController = nil;
-                if ([tabBarController.selectedViewController isKindOfClass:[UINavigationController class]]) {
-                    navController = (UINavigationController *)tabBarController.selectedViewController;
-                }
-
-                // 尝试跳转到"已定制"页面
-                if (navController) {
-                    // 方法1: 尝试通过类名创建视图控制器
-                    NSArray *possibleClassNames = @[
-                        @"DACustomizedFilesViewController",
-                        @"DACustomizedViewController",
-                        @"DAFileListViewController",
-                        @"DAMineListViewController"
-                    ];
-
-                    for (NSString *className in possibleClassNames) {
-                        Class vcClass = NSClassFromString(className);
-                        if (vcClass) {
-                            UIViewController *customizedVC = [[vcClass alloc] init];
-                            customizedVC.title = @"已定制";
-                            [navController pushViewController:customizedVC animated:YES];
-                            NSLog(@"[InstallRedirect] 成功跳转到: %@", className);
-                            return; // 成功,不执行原始方法
-                        }
-                    }
-
-                    // 方法2: 如果找不到具体的类,至少切换到文件tab
-                    NSLog(@"[InstallRedirect] 已切换到文件tab");
-                    return;
-                }
-
-                break;
-            }
+    if ([selectVC respondsToSelector:@selector(segmentedTitleView)]) {
+        id segmented = ((id (*)(id, SEL))objc_msgSend)(selectVC, @selector(segmentedTitleView));
+        if ([segmented respondsToSelector:@selector(setSelectedSegmentIndex:)]) {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(segmented, @selector(setSelectedSegmentIndex:), 1);
+            NSLog(@"[InstallRedirect] set segment index 1");
         }
     }
 
-    // 方案2: 如果没有 TabBarController,尝试直接 push
-    UINavigationController *navController = currentVC.navigationController;
-    if (navController) {
-        NSLog(@"[InstallRedirect] 找到 NavigationController, 尝试直接跳转");
+    if ([selectVC respondsToSelector:@selector(setSelect)]) {
+        ((void (*)(id, SEL))objc_msgSend)(selectVC, @selector(setSelect));
+        NSLog(@"[InstallRedirect] called setSelect");
+    }
+}
 
-        NSArray *possibleClassNames = @[
-            @"DACustomizedFilesViewController",
-            @"DACustomizedViewController",
-            @"DAFileListViewController",
-            @"DAMineListViewController"
-        ];
+%hook DASignProcessVC
 
-        for (NSString *className in possibleClassNames) {
-            Class vcClass = NSClassFromString(className);
-            if (vcClass) {
-                UIViewController *customizedVC = [[vcClass alloc] init];
-                customizedVC.title = @"已定制";
-                [navController pushViewController:customizedVC animated:YES];
-                NSLog(@"[InstallRedirect] 成功跳转到: %@", className);
-                return;
-            }
+- (void)installClick {
+    NSLog(@"[InstallRedirect] intercept DASignProcessVC installClick");
+
+    UIViewController *root = IRRootViewController();
+    UIViewController *selectVC = IRFindViewController(root, @"DASelectAppVC");
+
+    if (!selectVC) {
+        NSLog(@"[InstallRedirect] DASelectAppVC not found, fallback original installClick");
+        %orig;
+        return;
+    }
+
+    UITabBarController *tabBar = selectVC.tabBarController;
+    if (tabBar) {
+        UIViewController *candidate = selectVC;
+        while (candidate.parentViewController && candidate.parentViewController != tabBar) {
+            candidate = candidate.parentViewController;
+        }
+        NSUInteger index = [tabBar.viewControllers indexOfObject:candidate];
+        if (index != NSNotFound) {
+            tabBar.selectedIndex = index;
+            NSLog(@"[InstallRedirect] selected tab %lu", (unsigned long)index);
         }
     }
 
-    // 如果所有方案都失败,显示提示并执行原始方法
-    NSLog(@"[InstallRedirect] 无法找到目标页面,执行原始跳转");
+    UINavigationController *nav = selectVC.navigationController;
+    if (nav && [nav.viewControllers containsObject:selectVC]) {
+        [nav popToViewController:selectVC animated:YES];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            IRSwitchSelectAppToSigned(selectVC);
+        });
+        NSLog(@"[InstallRedirect] pop to DASelectAppVC then switch signed");
+        return;
+    }
 
-    // 可选: 显示一个提示
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"提示"
-                                                                   message:@"请手动前往 文件-已定制 查看"
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"确定" style:UIAlertActionStyleDefault handler:nil]];
-    [currentVC presentViewController:alert animated:YES completion:nil];
-
-    // 不执行原始方法,避免跳转到原来的页面
-    // %orig;
+    IRSwitchSelectAppToSigned(selectVC);
 }
 
 %end
 
 %ctor {
-    NSLog(@"[InstallRedirect] Tweak 已加载");
+    NSLog(@"[InstallRedirect] loaded");
 }
