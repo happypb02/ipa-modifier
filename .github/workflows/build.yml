@@ -7,31 +7,35 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-13
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+
+    - name: Setup environment
+      run: |
+        brew install ldid
+        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
     - name: Install Theos
       run: |
-        export THEOS=/opt/theos
-        sudo git clone --recursive https://github.com/theos/theos.git $THEOS
-        echo "THEOS=$THEOS" >> $GITHUB_ENV
+        git clone --recursive https://github.com/theos/theos.git $HOME/theos
 
     - name: Install insert_dylib
       run: |
         git clone https://github.com/Tyilo/insert_dylib
         cd insert_dylib
-        xcodebuild
+        xcodebuild -configuration Release
         sudo cp build/Release/insert_dylib /usr/local/bin/
+        insert_dylib --version || echo "insert_dylib installed"
 
     - name: Build Tweak
       run: |
-        export THEOS=/opt/theos
         cd InstallRedirect
+        export THEOS=$HOME/theos
         make clean || true
-        make
+        make FINALPACKAGE=1
 
     - name: Extract IPA
       run: |
@@ -39,6 +43,8 @@ jobs:
 
     - name: Copy dylib to app
       run: |
+        ls -la InstallRedirect/.theos/obj/
+        cp InstallRedirect/.theos/obj/InstallRedirect.dylib temp/Payload/DumpApp.app/ || \
         cp InstallRedirect/.theos/obj/debug/InstallRedirect.dylib temp/Payload/DumpApp.app/
 
     - name: Inject dylib
@@ -55,18 +61,8 @@ jobs:
         zip -qr ../2_modified.ipa Payload
 
     - name: Upload modified IPA
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: modified-ipa
         path: 2_modified.ipa
         retention-days: 7
-
-    - name: Create Release
-      if: github.ref == 'refs/heads/main'
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v1.0.${{ github.run_number }}
-        name: Modified IPA v1.0.${{ github.run_number }}
-        files: 2_modified.ipa
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
