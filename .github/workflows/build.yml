@@ -594,38 +594,38 @@ jobs:
                         while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
                         print(f"[+] class_ro_t at {q:#x} => class name: {name.decode(errors='replace')}")
                     break
-        # ── Extra: resolve class name and GOT selectors ──────────────────────
-        # class_ro_t at file 0xd9c988, name* at offset 24 = file 0xd9c9a0
+        # ── Extra: resolve class name (in __TEXT,__objc_classname) ──────────
         name_ptr_foff = 0xd9c988 + 24
         name_ptr = read_u64(data, name_ptr_foff)
         print(f"[*] class_ro_t name_ptr = {name_ptr:#x}")
-        nf = vm_to_file(sections, name_ptr)
-        if nf:
-            name = b''
-            j = nf
-            while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-            print(f"[+] class name = {name.decode(errors='replace')}")
-        else:
-            print(f"[!] name_ptr not in any section")
-
-        # Resolve GOT entries for the two unresolved stubs
-        for got_va in [0x100ccafd0, 0x100ccafa8]:
-            gf = vm_to_file(sections, got_va)
-            if gf:
-                ptr = read_u64(data, gf)
-                print(f"[*] GOT {got_va:#x} -> {ptr:#x}")
-                if ptr in selref_to_name:
-                    print(f"    => selector: {selref_to_name[ptr]}")
-                elif mn_vaddr <= ptr < mn_vaddr + mn_size:
-                    sf2 = mn_foff + (ptr - mn_vaddr)
-                    name = b''
-                    j = sf2
-                    while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-                    print(f"    => string: {name.decode(errors='replace')}")
-                else:
-                    print(f"    => unknown ptr")
+        # Try direct file offset lookup for __TEXT sections
+        cn_key = ('__TEXT', '__objc_classname')
+        if cn_key in sections:
+            cn_foff, cn_vaddr, cn_size = sections[cn_key]
+            if cn_vaddr <= name_ptr < cn_vaddr + cn_size:
+                nf = cn_foff + (name_ptr - cn_vaddr)
+                name = b''
+                j = nf
+                while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
+                print(f"[+] class name = {name.decode(errors='replace')}")
             else:
-                print(f"[!] GOT {got_va:#x} not in sections")
+                print(f"[!] name_ptr {name_ptr:#x} not in __objc_classname ({cn_vaddr:#x}..{cn_vaddr+cn_size:#x})")
+        else:
+            print("[!] __TEXT,__objc_classname section not found")
+
+        # Also check: does DASignProcessVC have a setSelectVC: or selectVC setter?
+        # Search for 'setSelectVC' in methnames
+        for sel_name in [b'setSelectVC:\x00', b'setSelectVC\x00', b'selectVC\x00']:
+            off = data[mn_foff:mn_foff+mn_size].find(sel_name)
+            if off >= 0:
+                print(f"[+] Found selector: {sel_name.rstrip(b'\\x00').decode()}")
+
+        # Decode signSuccess instruction [12] = 0xd2800022
+        # MOVZ X2, #1 -> setSelectedSegmentIndex: called with index=1
+        w12 = read_u32(data, ss_foff + 12*4)
+        print(f"[*] signSuccess instr[12] = {w12:#010x}")
+        if w12 == 0xd2800022:
+            print("[+] MOVZ X2, #1 -> setSelectedSegmentIndex: called with index=1 (已定制 tab)")
         PYEOF
 
     - name: Remove old signature
