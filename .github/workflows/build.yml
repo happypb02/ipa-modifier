@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
     - name: Checkout code
@@ -16,12 +16,18 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Patch binary
+    - name: Compile hook dylib
       run: |
-        python3 patch_binary.py 2>&1 | tee patch.log
-        exit_code=${PIPESTATUS[0]}
-        cat patch.log
-        exit $exit_code
+        clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+          -framework Foundation -framework UIKit \
+          -dynamiclib -o libhook.dylib hook.m
+
+    - name: Inject dylib
+      run: |
+        brew install insert_dylib
+        mkdir -p temp/Payload/DumpApp.app/Frameworks
+        cp libhook.dylib temp/Payload/DumpApp.app/Frameworks/
+        insert_dylib @executable_path/Frameworks/libhook.dylib temp/Payload/DumpApp.app/DumpApp --inplace --weak
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
