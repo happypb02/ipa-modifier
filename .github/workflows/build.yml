@@ -271,7 +271,8 @@ jobs:
                                         break
                                 else:
                                     n_ptr = read_u64(data, m_foff)
-                                    if n_ptr == ic_selref_vaddr:
+                                    # absolute method_t: name is SEL (pointer to string), not selref
+                                    if n_ptr == ic_str_vaddr or n_ptr == ic_selref_vaddr:
                                         installclick_imp_vaddr = read_u64(data, m_foff + 16)
                                         print(f"[+] installClick IMP vm (abs): {installclick_imp_vaddr:#x}")
                                         break
