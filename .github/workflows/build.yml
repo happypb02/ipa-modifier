@@ -17,7 +17,13 @@ jobs:
       run: unzip -q 2.ipa -d temp
 
     - name: Patch binary
-      run: python3 patch_binary.py
+      run: |
+        python3 patch_binary.py 2>&1 | tee patch.log
+        cat patch.log
+        if grep -q "\[!\]" patch.log; then
+          echo "Patch failed"
+          exit 1
+        fi
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
