@@ -112,19 +112,26 @@ for search_foff in range(0, len(data) - 48, 8):
                     ivar_type_ptr = read_u64(data, ivar_base + 16)
 
                     # Find ivar name
+                    ivar_name = "?"
+                    ivar_offset = -1
+
                     for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
                         if vaddr2 <= ivar_name_ptr < vaddr2 + size2:
                             name_foff = foff2 + (ivar_name_ptr - vaddr2)
                             name_end = data.find(b'\x00', name_foff)
-                            ivar_name = data[name_foff:name_end].decode('utf-8', errors='ignore')
-
-                            # Read offset value
-                            if vaddr2 <= ivar_offset_ptr < vaddr2 + size2:
-                                offset_foff = foff2 + (ivar_offset_ptr - vaddr2)
-                                ivar_offset = read_u32(data, offset_foff)
-                                print(f"    - {ivar_name}: offset={ivar_offset}")
-
-                                if ivar_name == '_selectVC':
-                                    print(f"\n[+] Found _selectVC ivar at offset {ivar_offset}!")
+                            if name_end > name_foff:
+                                ivar_name = data[name_foff:name_end].decode('utf-8', errors='ignore')
                             break
+
+                    # Read offset value
+                    for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
+                        if vaddr2 <= ivar_offset_ptr < vaddr2 + size2:
+                            offset_foff = foff2 + (ivar_offset_ptr - vaddr2)
+                            ivar_offset = read_u32(data, offset_foff)
+                            break
+
+                    print(f"    [{i}] {ivar_name}: offset={ivar_offset}")
+
+                    if 'selectVC' in ivar_name:
+                        print(f"\n[+] *** Found {ivar_name} ivar at offset {ivar_offset}! ***\n")
                 break
