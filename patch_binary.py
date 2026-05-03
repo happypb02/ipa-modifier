@@ -133,22 +133,23 @@ if selrefs_key not in sections:
     selrefs_key = ('__DATA_CONST', '__objc_selrefs')
 sr_foff, sr_vaddr, sr_size = sections[selrefs_key]
 
+# Find selectVC selector string
+sv_off = methnames_data.find(b'selectVC\x00')
+if sv_off >= 0:
+    sv_str_vaddr = mn_vaddr + sv_off
+else:
+    sv_str_vaddr = None
+
 ic_selref_vaddr = ss_selref_vaddr = sv_selref_vaddr = None
 for i in range(0, sr_size, 8):
     ptr = read_u64(data, sr_foff + i)
     if ptr == ic_str_vaddr: ic_selref_vaddr = sr_vaddr + i
     if ptr == ss_str_vaddr: ss_selref_vaddr = sr_vaddr + i
-    # Also find selectVC selref for the getter
-    if sv_selref_vaddr is None:
-        sv_off2 = methnames_data.find(b'selectVC\x00')
-        if sv_off2 >= 0:
-            sv_str_va2 = mn_vaddr + sv_off2
-            if ptr == sv_str_va2:
-                sv_selref_vaddr = sr_vaddr + i
-                print("[+] selectVC selref: {0:#x}".format(sv_selref_vaddr))
+    if sv_str_vaddr and ptr == sv_str_vaddr: sv_selref_vaddr = sr_vaddr + i
 
 print("[+] installClick selref: {0:#x}".format(ic_selref_vaddr) if ic_selref_vaddr else "[!] installClick selref not found")
 print("[+] signSuccess  selref: {0:#x}".format(ss_selref_vaddr) if ss_selref_vaddr else "[!] signSuccess selref not found")
+print("[+] selectVC selref: {0:#x}".format(sv_selref_vaddr) if sv_selref_vaddr else "[!] selectVC selref not found")
 
 if not all([ic_selref_vaddr, ss_selref_vaddr, sv_selref_vaddr]):
     print("[!] Missing required selrefs:")
