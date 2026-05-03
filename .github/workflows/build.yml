@@ -626,6 +626,37 @@ jobs:
         print(f"[*] signSuccess instr[12] = {w12:#010x}")
         if w12 == 0xd2800022:
             print("[+] MOVZ X2, #1 -> setSelectedSegmentIndex: called with index=1 (已定制 tab)")
+
+        # ── Check DASignProcessVC's actual ivar list ──────────────────────────
+        # DASignProcessVC class_ro_t is at file 0xdd6188
+        # ivars* is at offset 40 = file 0xdd61b0
+        da_cro_foff = 0xdd6188
+        ivars_ptr = read_u64(data, da_cro_foff + 40)
+        print(f"[*] DASignProcessVC class_ro_t ivars* = {ivars_ptr:#x}")
+        if ivars_ptr:
+            il_f = vm_to_file(sections, ivars_ptr)
+            if il_f:
+                il_entsize = read_u32(data, il_f)
+                il_count   = read_u32(data, il_f + 4)
+                print(f"[*] DASignProcessVC ivar_list: entsize={il_entsize} count={il_count}")
+                for i in range(min(il_count, 10)):
+                    iv_f = il_f + 8 + i * 32
+                    off_ptr = read_u64(data, iv_f)
+                    name_ptr2 = read_u64(data, iv_f + 8)
+                    # resolve name
+                    nf2 = vm_to_file(sections, name_ptr2)
+                    iname = b''
+                    if nf2:
+                        j = nf2
+                        while j < len(data) and data[j]: iname += bytes([data[j]]); j += 1
+                    # resolve offset value
+                    off_f = vm_to_file(sections, off_ptr)
+                    ioff = read_u32(data, off_f) if off_f else 0
+                    print(f"  ivar[{i}] name={iname.decode(errors='replace')} offset={ioff}")
+            else:
+                print(f"[!] ivars_ptr {ivars_ptr:#x} not in sections")
+        else:
+            print("[!] DASignProcessVC has no ivars (ivars*=0)")
         PYEOF
 
     - name: Remove old signature
