@@ -135,10 +135,9 @@ jobs:
 
         ic_off = methnames_data.find(b'installClick\x00')
         ss_off = methnames_data.find(b'signSuccess\x00')
-        sv_off = methnames_data.find(b'selectVC\x00')
 
-        if ic_off < 0 or ss_off < 0 or sv_off < 0:
-            print(f"[!] Missing selectors: ic={ic_off} ss={ss_off} sv={sv_off}"); sys.exit(1)
+        if ic_off < 0 or ss_off < 0:
+            print(f"[!] Missing selectors: ic={ic_off} ss={ss_off}"); sys.exit(1)
 
         # Selrefs
         selrefs_key = ('__DATA', '__objc_selrefs')
@@ -148,7 +147,6 @@ jobs:
 
         ic_str_vaddr = mn_vaddr + ic_off
         ss_str_vaddr = mn_vaddr + ss_off
-        sv_str_vaddr = mn_vaddr + sv_off
 
         ic_selref_vaddr = ss_selref_vaddr = None
         for i in range(0, sr_size, 8):
@@ -162,52 +160,15 @@ jobs:
         if not all([ic_selref_vaddr, ss_selref_vaddr]):
             print("[!] Missing required selrefs"); sys.exit(1)
 
-        # Resolve __objc_const early (needed for both ivar search and IMP search)
+        # Resolve __objc_const early (needed for IMP search)
         const_key = ('__DATA', '__objc_const')
         if const_key not in sections:
             const_key = ('__DATA_CONST', '__objc_const')
         oc_foff, oc_vaddr, oc_size = sections[const_key]
 
-        # Find _selectVC ivar offset (compiler uses direct ivar access, not objc_msgSend)
-        # ivar_t: offset_ptr(8), name_ptr(8), type_ptr(8), align(4), size(4) = 32 bytes
-        selectvc_ivar_offset = None
-        ivar_key = ('__DATA', '__objc_ivar')
-        if ivar_key in sections:
-            iv_foff, iv_vaddr, iv_size = sections[ivar_key]
-            # Search for "_selectVC" name in entire binary, then find ivar_t referencing it
-            for name_candidate in [b'_selectVC\x00', b'selectVC\x00']:
-                pos = 0
-                while True:
-                    pos = data.find(name_candidate, pos)
-                    if pos < 0: break
-                    # Find vm address of this string
-                    name_vaddr = None
-                    for (seg, sect), (foff, vaddr, size) in sections.items():
-                        if foff <= pos < foff + size:
-                            name_vaddr = vaddr + (pos - foff); break
-                    if name_vaddr:
-                        name_bytes = struct.pack("<Q", name_vaddr)
-                        # Search __objc_const for ivar_t with this name_ptr
-                        q = oc_foff
-                        while q < oc_foff + oc_size - 32:
-                            if data[q+8:q+16] == name_bytes:
-                                off_ptr_vm = read_u64(data, q)
-                                off_ptr_file = vm_to_file(sections, off_ptr_vm)
-                                if off_ptr_file:
-                                    selectvc_ivar_offset = read_u32(data, off_ptr_file)
-                                    print(f"[+] selectVC ivar offset: {selectvc_ivar_offset}")
-                                break
-                            q += 1
-                    if selectvc_ivar_offset is not None: break
-                    pos += 1
-                if selectvc_ivar_offset is not None: break
-
-        if selectvc_ivar_offset is None:
-            print("[!] selectVC ivar offset not found"); sys.exit(1)
-
         # Find installClick IMP via class object chain
-        # class_ro_t layout (64-bit): flags(4), instanceStart(4), instanceSize(4),
-        #   reserved(4), ivarLayout(8), name*(8), baseMethods*(8), ...
+        # class_ro_t: flags(4),instanceStart(4),instanceSize(4),reserved(4),
+        #   ivarLayout*(8), name*(8), baseMethods*(8), ...
         # name is at offset 24, baseMethods at offset 32
 
         installclick_imp_vaddr = None
@@ -318,12 +279,8 @@ jobs:
             return struct.pack("<I", 0xD65F03C0)
 
         # ── Build patch ─────────────────────────────────────────────────────
-        # Goal: [self->_selectVC signSuccess]
+        # Goal: x0=[self selectVC]; [x0 signSuccess] (tail call)
         #
-        # STP  x29, x30, [sp, #-16]!
-        # ADD  x29, sp,  #0
-        # LDR  x0,  [x0, #selectvc_ivar_offset]  ; x0 = self->_selectVC
-        # ADRP x1,  page(ss_selref)
         # LDR  x1,  [x1, off(ss_selref)]
         # BL   _objc_msgSend          ; [selectVC signSuccess]
         # LDP  x29, x30, [sp], #16
@@ -335,21 +292,64 @@ jobs:
 
         def pc(): return base + len(patch)
 
+        def b_tail(pc_va, target_va):  # B target (unconditional branch, no link)
+            off   = (target_va - pc_va) & 0xFFFFFFFF
+            imm26 = (off >> 2) & 0x3FFFFFF
+            return struct.pack("<I", 0x14000000 | imm26)
+
+        # ── Find selectVC selref ─────────────────────────────────────────────
+        # selectVC selref is at 0x100ee5670 (found via analysis)
+        # Search for it: scan all selrefs for the selectVC string
+        sv_str_off = methnames_data.find(b'selectVC\x00')
+        sv_selref_vaddr = None
+        if sv_str_off >= 0:
+            sv_str_vaddr = mn_vaddr + sv_str_off
+            # The correct selectVC selref points to str at 0x100bb7cc8 (methname off 0x78440)
+            # Search ALL occurrences
+            pos = 0
+            while True:
+                off2 = methnames_data.find(b'selectVC\x00', pos)
+                if off2 < 0: break
+                sv_va = mn_vaddr + off2
+                sv_bytes = struct.pack("<Q", sv_va)
+                for i in range(0, sr_size, 8):
+                    if data[sr_foff+i:sr_foff+i+8] == sv_bytes:
+                        sv_selref_vaddr = sr_vaddr + i
+                        print(f"[+] selectVC selref: {sv_selref_vaddr:#x} -> str {sv_va:#x}")
+                        break
+                if sv_selref_vaddr: break
+                pos = off2 + 1
+
+        if not sv_selref_vaddr:
+            print("[!] selectVC selref not found"); sys.exit(1)
+
+        # ── Build new patch ──────────────────────────────────────────────────
+        # Goal: x0 = [self selectVC]; [x0 signSuccess]  (tail call)
+        #
+        # STP  x29, x30, [sp, #-16]!   ; save frame
+        # ADD  x29, sp,  #0
+        # ADRP x1,  page(sv_selref)    ; load selectVC selector
+        # LDR  x1,  [x1, off(sv_selref)]
+        # BL   _objc_msgSend           ; x0 = [self selectVC]
+        # LDP  x29, x30, [sp], #16     ; restore frame (x30 = our caller's LR)
+        # ADRP x1,  page(ss_selref)    ; load signSuccess selector
+        # LDR  x1,  [x1, off(ss_selref)]
+        # B    _objc_msgSend           ; tail call: [selectVC signSuccess], returns to caller
+
         patch += stp_pre(X29, X30, SP, -16)
         patch += add_imm(X29, SP, 0)
 
-        # LDR x0, [x0, #ivar_offset]  — load self->_selectVC
-        patch += ldr_imm(X0, X0, selectvc_ivar_offset)
-
-        patch += adrp(X1, pc(), ss_selref_vaddr)
-        patch += ldr_imm(X1, X1, ss_selref_vaddr & 0xFFF)
-
+        patch += adrp(X1, pc(), sv_selref_vaddr)
+        patch += ldr_imm(X1, X1, sv_selref_vaddr & 0xFFF)
         patch += bl(pc(), objc_msgSend_vaddr)
 
         patch += ldp_post(X29, X30, SP, 16)
-        patch += ret()
 
-        assert len(patch) == 32, f"patch size {len(patch)}"
+        patch += adrp(X1, pc(), ss_selref_vaddr)
+        patch += ldr_imm(X1, X1, ss_selref_vaddr & 0xFFF)
+        patch += b_tail(pc(), objc_msgSend_vaddr)
+
+        assert len(patch) == 36, f"patch size {len(patch)}"
 
         data[installclick_imp_foff:installclick_imp_foff + len(patch)] = patch
         print(f"[+] Wrote {len(patch)}-byte ARM64 patch at file offset {installclick_imp_foff:#x}")
