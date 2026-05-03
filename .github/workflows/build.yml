@@ -13,106 +13,197 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update -q
-        sudo apt-get install -y git unzip zip perl curl clang lld
-
-    - name: Get Logos preprocessor and iOS headers
-      run: |
-        # 克隆 theos (只要 logos 和 headers)
-        git clone --depth=1 https://github.com/theos/logos.git /tmp/logos
-        git clone --depth=1 https://github.com/theos/headers.git /tmp/ios-headers
-        echo "Logos ready"
-        ls /tmp/logos/bin/
-        ls /tmp/ios-headers/ | head -10
-
-    - name: Convert Tweak.x to ObjC with Logos
-      run: |
-        perl /tmp/logos/bin/logos.pl InstallRedirect/Tweak.x > /tmp/Tweak.mm
-        echo "--- First 30 lines ---"
-        head -30 /tmp/Tweak.mm
-
-    - name: Compile dylib
-      run: |
-        # 用 clang 交叉编译 arm64 dylib
-        # 需要 substrate.h 头文件
-        cat > /tmp/substrate.h << 'EOF'
-        #pragma once
-        #include <objc/runtime.h>
-        #include <objc/message.h>
-        void MSHookMessageEx(Class _class, SEL sel, IMP imp, IMP *result);
-        #define MSHookMessage(class, sel, imp, result) MSHookMessageEx(class, @selector(sel), (IMP)imp, (IMP*)result)
-        EOF
-
-        # 创建最小化的 iOS 头文件环境
-        mkdir -p /tmp/fakeSDK/usr/include
-        cp /tmp/ios-headers/*.h /tmp/fakeSDK/usr/include/ 2>/dev/null || true
-
-        clang \
-          -arch arm64 \
-          -target arm64-apple-ios12.0 \
-          -isysroot /tmp/fakeSDK \
-          -I/tmp/ios-headers \
-          -I/tmp \
-          -I/tmp/theos/vendor/include \
-          -dynamiclib \
-          -fmodules \
-          -framework UIKit \
-          -framework Foundation \
-          -lobjc \
-          -Wno-error \
-          -o /tmp/InstallRedirect.dylib \
-          /tmp/Tweak.mm 2>&1 || echo "Compile attempt done"
-
-        ls -lh /tmp/InstallRedirect.dylib 2>/dev/null || echo "dylib not created"
-
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Copy dylib if compiled successfully
+    - name: Patch binary - redirect installClick to signSuccess
       run: |
-        if [ -f /tmp/InstallRedirect.dylib ]; then
-          cp /tmp/InstallRedirect.dylib temp/Payload/DumpApp.app/
-          echo "dylib copied"
-        else
-          echo "No dylib, skipping"
-        fi
-
-    - name: Inject LC_LOAD_DYLIB with Python
-      run: |
-        if [ ! -f temp/Payload/DumpApp.app/InstallRedirect.dylib ]; then
-          echo "No dylib to inject, skipping"
-          exit 0
-        fi
         python3 << 'PYEOF'
-        import struct
+        import struct, sys
+
         binary_path = "temp/Payload/DumpApp.app/DumpApp"
-        dylib_name  = "@executable_path/InstallRedirect.dylib"
+
         with open(binary_path, "rb") as f:
             data = bytearray(f.read())
-        MH_CIGAM_64 = 0xCFFAEDFE
+
+        # 从上次分析日志中得到的真实地址:
+        # -[DASignProcessVC installClick]  在 debug symbol 里
+        # 我们需要找到 installClick 方法实现的地址，然后在开头插入跳转到 signSuccess 的调用
+
+        # 策略: 在 __objc_methnames 里找到 "installClick" 字符串的位置
+        # 然后在 __objc_selrefs 里找到对应的 selector 引用
+        # 再在 __objc_methnames 里找到 "signSuccess" 的位置
+        # 最后找到 DASignProcessVC 的方法列表，修改 installClick 的 IMP 指针
+        # 让它指向一个我们构造的 trampoline，调用 self.selectVC 的 signSuccess
+
+        # 更简单的方案: 直接找到 installClick 的方法实现地址
+        # 然后在方法开头写入 ARM64 指令:
+        # 1. 读取 self.selectVC (通过 objc_msgSend)
+        # 2. 调用 selectVC 的 segmentedTitleView
+        # 3. 设置 selectedSegmentIndex = 1
+        # 4. 调用 sendActionsForControlEvents
+
+        # 先找 Mach-O 的 load commands，定位各个 section
+        def read_u32(data, off): return struct.unpack_from("<I", data, off)[0]
+        def read_u64(data, off): return struct.unpack_from("<Q", data, off)[0]
+        def read_i32(data, off): return struct.unpack_from("<i", data, off)[0]
+
         FAT_MAGIC   = 0xCAFEBABE
-        def patch(data, offset):
-            if struct.unpack_from("<I", data, offset)[0] != MH_CIGAM_64: return
-            ncmds = struct.unpack_from("<I", data, offset+16)[0]
-            szc   = struct.unpack_from("<I", data, offset+20)[0]
-            p = offset+32
-            for _ in range(ncmds): p += struct.unpack_from("<I", data, p+4)[0]
-            b = dylib_name.encode()+b"\x00"
-            b += b"\x00"*((8-(24+len(b))%8)%8)
-            lc = struct.pack("<IIIIi",0xC,24+len(b),24,0,0x10000)+struct.pack("<I",0x10000)+b
-            data[p:p]=lc
-            struct.pack_into("<I",data,offset+16,ncmds+1)
-            struct.pack_into("<I",data,offset+20,szc+len(lc))
-            print(f"[+] Injected at {p:#x}")
-        magic = struct.unpack_from(">I",data,0)[0]
-        if magic==FAT_MAGIC:
-            for i in range(struct.unpack_from(">I",data,4)[0]):
-                patch(data,struct.unpack_from(">I",data,8+i*20+8)[0])
-        else: patch(data,0)
-        open(binary_path,"wb").write(data)
-        print("[+] Done")
+        MH_CIGAM_64 = 0xCFFAEDFE
+        LC_SEGMENT_64 = 0x19
+
+        def find_sections(data, mh_off):
+            """返回 {(segname, sectname): (file_offset, vm_addr, size)}"""
+            sections = {}
+            ncmds = read_u32(data, mh_off + 16)
+            p = mh_off + 32
+            for _ in range(ncmds):
+                cmd     = read_u32(data, p)
+                cmdsize = read_u32(data, p + 4)
+                if cmd == LC_SEGMENT_64:
+                    segname = data[p+8:p+24].rstrip(b'\x00').decode()
+                    nsects  = read_u32(data, p + 64)
+                    sp = p + 72
+                    for _ in range(nsects):
+                        sectname  = data[sp:sp+16].rstrip(b'\x00').decode()
+                        vm_addr   = read_u64(data, sp + 32)
+                        vm_size   = read_u64(data, sp + 40)
+                        file_off  = read_u32(data, sp + 48)
+                        sections[(segname, sectname)] = (file_off, vm_addr, vm_size)
+                        sp += 80
+                p += cmdsize
+            return sections
+
+        def vm_to_file(sections, vm_addr):
+            for (seg, sect), (foff, vaddr, size) in sections.items():
+                if vaddr <= vm_addr < vaddr + size:
+                    return foff + (vm_addr - vaddr)
+            return None
+
+        # 找 arm64 slice
+        magic = read_u32(data, 0)
+        mh_off = 0
+        if magic == struct.unpack(">I", b'\xCA\xFE\xBA\xBE')[0]:
+            narch = struct.unpack_from(">I", data, 4)[0]
+            for i in range(narch):
+                base = 8 + i * 20
+                cpu_type = struct.unpack_from(">I", data, base)[0]
+                if cpu_type == 0x0100000C:  # ARM64
+                    mh_off = struct.unpack_from(">I", data, base + 8)[0]
+                    break
+
+        sections = find_sections(data, mh_off)
+        print(f"[*] Found {len(sections)} sections")
+
+        # 找 __objc_methnames section
+        methnames_key = ('__TEXT', '__objc_methnames')
+        if methnames_key not in sections:
+            print("[!] __objc_methnames not found")
+            sys.exit(0)
+
+        mn_foff, mn_vaddr, mn_size = sections[methnames_key]
+        methnames_data = data[mn_foff:mn_foff + mn_size]
+
+        # 找 installClick 和 signSuccess 在 methnames 里的偏移
+        ic_off = methnames_data.find(b'installClick\x00')
+        ss_off = methnames_data.find(b'signSuccess\x00')
+        st_off = methnames_data.find(b'segmentedTitleView\x00')
+        sv_off = methnames_data.find(b'selectVC\x00')
+
+        print(f"[*] installClick in methnames: {ic_off:#x}")
+        print(f"[*] signSuccess in methnames: {ss_off:#x}")
+        print(f"[*] segmentedTitleView in methnames: {st_off:#x}")
+        print(f"[*] selectVC in methnames: {sv_off:#x}")
+
+        # 找 __objc_selrefs section — 存放 selector 指针
+        selrefs_key = ('__DATA', '__objc_selrefs')
+        if selrefs_key not in sections:
+            selrefs_key = ('__DATA_CONST', '__objc_selrefs')
+
+        if selrefs_key not in sections:
+            print("[!] __objc_selrefs not found")
+            sys.exit(0)
+
+        sr_foff, sr_vaddr, sr_size = sections[selrefs_key]
+
+        # 找 installClick selector 的 vm 地址 (selref 里存的是指向 methname 字符串的指针)
+        ic_str_vaddr = mn_vaddr + ic_off
+        ss_str_vaddr = mn_vaddr + ss_off
+
+        ic_selref_vaddr = None
+        ss_selref_vaddr = None
+
+        for i in range(0, sr_size, 8):
+            ptr = read_u64(data, sr_foff + i)
+            if ptr == ic_str_vaddr:
+                ic_selref_vaddr = sr_vaddr + i
+                print(f"[+] installClick selref vm_addr: {ic_selref_vaddr:#x}")
+            if ptr == ss_str_vaddr:
+                ss_selref_vaddr = sr_vaddr + i
+                print(f"[+] signSuccess selref vm_addr: {ss_selref_vaddr:#x}")
+
+        # 找 DASignProcessVC 的方法列表，找到 installClick 的 IMP
+        # 在 __objc_methnames 里找到 DASignProcessVC 类名
+        classname_off = data.find(b'DASignProcessVC\x00')
+        print(f"[*] DASignProcessVC classname at file offset: {classname_off:#x}")
+
+        # 找 __objc_const section (存放方法列表)
+        const_key = ('__DATA', '__objc_const')
+        if const_key not in sections:
+            const_key = ('__DATA_CONST', '__objc_const')
+
+        if const_key not in sections:
+            print("[!] __objc_const not found")
+            sys.exit(0)
+
+        oc_foff, oc_vaddr, oc_size = sections[const_key]
+
+        # 在 __objc_const 里搜索方法列表，找到包含 installClick selector 的条目
+        # method_t 结构 (relative method): name_offset(i32), types_offset(i32), imp_offset(i32)
+        # 或者 method_t 结构 (absolute): name_ptr(u64), types_ptr(u64), imp_ptr(u64)
+
+        installclick_imp_file_off = None
+
+        if ic_selref_vaddr:
+            # 搜索 selref 指针在 __objc_const 里的引用
+            ic_selref_bytes = struct.pack("<Q", ic_selref_vaddr)
+            p = oc_foff
+            while p < oc_foff + oc_size - 8:
+                if data[p:p+8] == ic_selref_bytes:
+                    # 找到了 name 字段，IMP 在 +16
+                    imp_ptr_foff = p + 16
+                    imp_vm = read_u64(data, imp_ptr_foff)
+                    imp_file = vm_to_file(sections, imp_vm)
+                    print(f"[+] installClick IMP vm: {imp_vm:#x}, file: {imp_file:#x}")
+                    installclick_imp_file_off = imp_file
+                    break
+                p += 1
+
+        # 如果找到了 installClick 的实现地址，我们在方法开头写入跳转指令
+        # 跳转到 signSuccess 的调用逻辑
+        # 但我们需要知道 signSuccess 的 IMP 地址
+
+        ss_imp_file_off = None
+        if ss_selref_vaddr:
+            ss_selref_bytes = struct.pack("<Q", ss_selref_vaddr)
+            p = oc_foff
+            while p < oc_foff + oc_size - 8:
+                if data[p:p+8] == ss_selref_bytes:
+                    imp_ptr_foff = p + 16
+                    imp_vm = read_u64(data, imp_ptr_foff)
+                    imp_file = vm_to_file(sections, imp_vm)
+                    print(f"[+] signSuccess IMP vm: {imp_vm:#x}, file: {imp_file:#x}")
+                    ss_imp_file_off = imp_file
+                    break
+                p += 1
+
+        print(f"\n[*] Summary:")
+        print(f"    installClick IMP file offset: {installclick_imp_file_off}")
+        print(f"    signSuccess IMP file offset: {ss_imp_file_off}")
+
+        with open(binary_path, "wb") as f:
+            f.write(data)
+        print("[+] Analysis done (no patch applied yet)")
         PYEOF
 
     - name: Remove old signature
