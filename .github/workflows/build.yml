@@ -206,45 +206,54 @@ jobs:
             print("[!] selectVC ivar offset not found"); sys.exit(1)
 
         # Find installClick IMP
-        # Strategy 1: absolute method list — search entire binary for 8-byte selref pointer
+        # iOS 16+ "direct selector" relative method lists:
+        #   name_off = relative offset from name field to selector STRING (in __objc_methname)
+        #   imp_off  = relative offset from imp field to stub in __TEXT,__objc_stubs
+        # The stub is a single B instruction to the real implementation.
+
         installclick_imp_vaddr = None
-        ic_selref_bytes = struct.pack("<Q", ic_selref_vaddr)
-        pos = 0
-        hits = []
-        while True:
-            pos = data.find(ic_selref_bytes, pos)
-            if pos < 0: break
-            hits.append(pos); pos += 1
-        print(f"[*] installClick selref ptr found at {len(hits)} file offsets: {[hex(x) for x in hits[:8]]}")
 
-        for hit in hits:
-            # hit is the file offset of the name field; IMP is at +16
-            imp_vm = read_u64(data, hit + 16)
-            if imp_vm and vm_to_file(sections, imp_vm):
-                installclick_imp_vaddr = imp_vm
-                print(f"[+] installClick IMP vm (abs): {imp_vm:#x}")
-                break
+        # ic_str_vaddr = address of "installClick\0" in __objc_methname
+        ic_str_vaddr = mn_vaddr + ic_off
+        print(f"[*] installClick str vaddr: {ic_str_vaddr:#x}")
 
-        # Strategy 2: relative method list — search entire binary for i32 relative ref to selref
-        if not installclick_imp_vaddr:
-            for seg, sect in sections:
-                foff, vaddr, size = sections[(seg, sect)]
-                if seg not in ('__TEXT', '__DATA', '__DATA_CONST'): continue
-                p = foff
-                while p < foff + size - 12:
-                    name_field_vaddr = vaddr + (p - foff)
-                    name_off = read_i32(data, p)
-                    if name_off != 0:
-                        target = (name_field_vaddr + name_off) & 0xFFFFFFFFFFFFFFFF
-                        if target == ic_selref_vaddr:
-                            imp_off = read_i32(data, p + 8)
-                            imp_vaddr = ((name_field_vaddr + 8) + imp_off) & 0xFFFFFFFFFFFFFFFF
-                            if vm_to_file(sections, imp_vaddr):
-                                installclick_imp_vaddr = imp_vaddr
-                                print(f"[+] installClick IMP vm (rel, {seg},{sect}): {imp_vaddr:#x}")
-                                break
-                    p += 4
-                if installclick_imp_vaddr: break
+        # Search all DATA/TEXT sections for a relative method_t whose name points to ic_str_vaddr
+        for seg, sect in list(sections.keys()):
+            foff, vaddr, size = sections[(seg, sect)]
+            p = foff
+            while p < foff + size - 12:
+                name_field_vaddr = vaddr + (p - foff)
+                name_off = read_i32(data, p)
+                if name_off != 0:
+                    target = (name_field_vaddr + name_off) & 0xFFFFFFFFFFFFFFFF
+                    if target == ic_str_vaddr or target == ic_selref_vaddr:
+                        imp_field_vaddr = name_field_vaddr + 8
+                        imp_off = read_i32(data, p + 8)
+                        imp_vaddr = (imp_field_vaddr + imp_off) & 0xFFFFFFFFFFFFFFFF
+                        imp_foff  = vm_to_file(sections, imp_vaddr)
+                        print(f"[*] candidate: name_field={name_field_vaddr:#x} target={target:#x} imp_vaddr={imp_vaddr:#x} imp_foff={imp_foff}")
+                        if imp_foff:
+                            # If imp points to __objc_stubs, follow the B instruction
+                            stubs_key2 = ('__TEXT', '__objc_stubs')
+                            if stubs_key2 in sections:
+                                s_foff, s_vaddr, s_size = sections[stubs_key2]
+                                if s_vaddr <= imp_vaddr < s_vaddr + s_size:
+                                    # stub is a B instruction: bits[31:26]=000101, imm26
+                                    stub_instr = read_u32(data, imp_foff)
+                                    if (stub_instr >> 26) == 0b000101:
+                                        imm26 = stub_instr & 0x3FFFFFF
+                                        if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF  # sign extend
+                                        real_imp = (imp_vaddr + imm26 * 4) & 0xFFFFFFFFFFFFFFFF
+                                        real_foff = vm_to_file(sections, real_imp)
+                                        print(f"[+] stub B -> real IMP: {real_imp:#x} foff={real_foff}")
+                                        if real_foff:
+                                            imp_vaddr = real_imp
+                                            imp_foff  = real_foff
+                            installclick_imp_vaddr = imp_vaddr
+                            print(f"[+] installClick IMP vm: {imp_vaddr:#x}")
+                            break
+                p += 4
+            if installclick_imp_vaddr: break
 
         if not installclick_imp_vaddr:
             print("[!] installClick IMP not found"); sys.exit(1)
