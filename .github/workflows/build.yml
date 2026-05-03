@@ -19,7 +19,14 @@ jobs:
     - name: Patch binary
       run: |
         python3 patch_binary.py 2>&1 | tee patch_output.log
-        exit ${PIPESTATUS[0]}
+        exit_code=${PIPESTATUS[0]}
+        if [ $exit_code -ne 0 ]; then
+          echo "## Patch Failed" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat patch_output.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+        exit $exit_code
 
     - name: Upload patch log on failure
       if: failure()
