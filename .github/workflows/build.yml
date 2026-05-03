@@ -659,6 +659,32 @@ jobs:
                 print(f"[!] ivars_ptr {ivars_ptr:#x} not in sections")
         else:
             print("[!] DASignProcessVC has no ivars (ivars*=0)")
+
+        # ── Find selectVC selref and installClick function size ───────────────
+        sv_str_off = data[mn_foff:mn_foff+mn_size].find(b'selectVC\x00')
+        if sv_str_off >= 0:
+            sv_str_vaddr = mn_vaddr + sv_str_off
+            sv_selref_vaddr = None
+            for i in range(0, sr_size, 8):
+                if read_u64(data, sr_foff + i) == sv_str_vaddr:
+                    sv_selref_vaddr = sr_vaddr + i; break
+            print(f"[*] selectVC str vaddr: {sv_str_vaddr:#x}")
+            print(f"[*] selectVC selref: {sv_selref_vaddr:#x}" if sv_selref_vaddr else "[!] selectVC selref not found")
+
+        # Find installClick function size by scanning for RET
+        ic_imp_foff = 0x27aa1c
+        ic_imp_vaddr = 0x10027aa1c
+        print(f"[*] Scanning installClick from {ic_imp_foff:#x}:")
+        for i in range(200):
+            w = read_u32(data, ic_imp_foff + i*4)
+            if w == 0xD65F03C0:  # RET
+                print(f"  RET at index {i}, offset +{i*4} bytes, total size >= {(i+1)*4} bytes")
+                break
+            if (w >> 26) == 0b100101:  # BL
+                imm26 = w & 0x3FFFFFF
+                if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF
+                tgt = (ic_imp_vaddr + i*4 + imm26*4) & 0xFFFFFFFFFFFFFFFF
+                print(f"  [{i:3d}] BL {tgt:#x}")
         PYEOF
 
     - name: Remove old signature
