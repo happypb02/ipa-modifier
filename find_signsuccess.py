@@ -105,28 +105,23 @@ for search_foff in range(0, len(data) - 48, 8):
                                         ss_imp_vaddr = imp_vm
                                         print(f"[+] signSuccess IMP at: {ss_imp_vaddr:#x}")
 
-                                        # Find file offset
+                                        # Check if it's in __TEXT::__text
                                         text_foff, text_vaddr, text_size = sections[('__TEXT', '__text')]
                                         if text_vaddr <= ss_imp_vaddr < text_vaddr + text_size:
-                                            ss_imp_foff = text_foff + (ss_imp_vaddr - text_vaddr)
-                                            print(f"[+] signSuccess file offset: {ss_imp_foff:#x}")
-
-                                            # Dump first 32 instructions
-                                            print("\n[*] First 32 instructions of signSuccess:")
-                                            for j in range(0, 128, 4):
-                                                insn = read_u32(data, ss_imp_foff + j)
-                                                print(f"  {ss_imp_vaddr + j:#x}: {insn:08x}")
-                                        break
+                                            print(f"[+] signSuccess is in __TEXT::__text - valid code")
+                                        else:
+                                            print(f"[!] signSuccess IMP is NOT in __TEXT::__text - invalid, will search by selref")
+                                            ss_imp_vaddr = None  # Mark as invalid
                                 break
+                        break
                     break
         if ss_imp_vaddr:
             break
 
-if not ss_imp_vaddr:
-    print("[!] signSuccess not found in DASelectAppVC methods")
-    print("[*] Searching for signSuccess by selref references...")
+# Always search by selref to find the real implementation
+print("\n[*] Searching for signSuccess by selref references...")
 
-    # Find signSuccess selref
+# Find signSuccess selref
     ss_off = methnames_data.find(b'signSuccess\x00')
     if ss_off < 0:
         print("[!] signSuccess selector string not found")
