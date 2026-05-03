@@ -119,8 +119,18 @@ jobs:
         if not objc_msgSend_vaddr:
             print("[!] _objc_msgSend not found"); sys.exit(1)
 
-        # Methnames
-        mn_foff, mn_vaddr, mn_size = sections[('__TEXT', '__objc_methnames')]
+        # Debug: list all sections
+        print("[*] All sections:")
+        for k in sorted(sections.keys()):
+            print(f"    {k[0]},{k[1]}")
+
+        # Methnames (try both spellings)
+        mn_key = ('__TEXT', '__objc_methnames')
+        if mn_key not in sections:
+            mn_key = ('__TEXT', '__objc_methname')
+        if mn_key not in sections:
+            print("[!] __objc_methnames section not found"); sys.exit(1)
+        mn_foff, mn_vaddr, mn_size = sections[mn_key]
         methnames_data = data[mn_foff:mn_foff + mn_size]
 
         ic_off = methnames_data.find(b'installClick\x00')
