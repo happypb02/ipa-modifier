@@ -135,9 +135,11 @@ jobs:
 
         ic_off = methnames_data.find(b'installClick\x00')
         ss_off = methnames_data.find(b'signSuccess\x00')
+        tb_off = methnames_data.find(b'tabBarController\x00')
+        si_off = methnames_data.find(b'setSelectedIndex:\x00')
 
-        if ic_off < 0 or ss_off < 0:
-            print(f"[!] Missing selectors: ic={ic_off} ss={ss_off}"); sys.exit(1)
+        if ic_off < 0 or ss_off < 0 or tb_off < 0 or si_off < 0:
+            print(f"[!] Missing selectors: ic={ic_off} ss={ss_off} tb={tb_off} si={si_off}"); sys.exit(1)
 
         # Selrefs
         selrefs_key = ('__DATA', '__objc_selrefs')
@@ -147,17 +149,23 @@ jobs:
 
         ic_str_vaddr = mn_vaddr + ic_off
         ss_str_vaddr = mn_vaddr + ss_off
+        tb_str_vaddr = mn_vaddr + tb_off
+        si_str_vaddr = mn_vaddr + si_off
 
-        ic_selref_vaddr = ss_selref_vaddr = None
+        ic_selref_vaddr = ss_selref_vaddr = tb_selref_vaddr = si_selref_vaddr = None
         for i in range(0, sr_size, 8):
             ptr = read_u64(data, sr_foff + i)
             if ptr == ic_str_vaddr: ic_selref_vaddr = sr_vaddr + i
             if ptr == ss_str_vaddr: ss_selref_vaddr = sr_vaddr + i
+            if ptr == tb_str_vaddr: tb_selref_vaddr = sr_vaddr + i
+            if ptr == si_str_vaddr: si_selref_vaddr = sr_vaddr + i
 
         print(f"[+] installClick selref: {ic_selref_vaddr:#x}" if ic_selref_vaddr else "[!] installClick selref not found")
         print(f"[+] signSuccess  selref: {ss_selref_vaddr:#x}" if ss_selref_vaddr else "[!] signSuccess selref not found")
+        print(f"[+] tabBarController selref: {tb_selref_vaddr:#x}" if tb_selref_vaddr else "[!] tabBarController selref not found")
+        print(f"[+] setSelectedIndex: selref: {si_selref_vaddr:#x}" if si_selref_vaddr else "[!] setSelectedIndex: selref not found")
 
-        if not all([ic_selref_vaddr, ss_selref_vaddr]):
+        if not all([ic_selref_vaddr, ss_selref_vaddr, tb_selref_vaddr, si_selref_vaddr]):
             print("[!] Missing required selrefs"); sys.exit(1)
 
         # Resolve __objc_const early (needed for IMP search)
@@ -269,28 +277,20 @@ jobs:
 
         # ── Build patch ──────────────────────────────────────────────────────
         # ADR (PC-relative) + LDR (PC-rel) avoids __DATA address dependency.
-        # Litpool appended at end of patch: sv_selref and ss_selref addresses.
-        #
-        # Layout (44 bytes total, litpool at installClick+36..51):
-        #  0: STP  x29,x30,[sp,#-16]!
-        #  4: ADD  x29,sp,#0
-        #  8: ADR  x1,litpool      ; PC+28 bytes → sv_selref
-        # 12: LDR  x1,[x1,#0]      ; load selector ptr (PC-rel via ADR)
-        # 16: BL   objc_msgSend    ; x0 = [self selectVC]
-        # 20: LDP  x29,x30,[sp],#16
-        # 24: ADR  x1,litpool+8    ; PC+20 bytes → ss_selref
-        # 28: LDR  x1,[x1,#0]
-        # 32: B    objc_msgSend    ; tail call [selectVC signSuccess]
-        # 36: LITPOOL: sv_selref_vaddr (8 bytes)
-        # 44: LITPOOL: ss_selref_vaddr (8 bytes)
+        # Direct binary behavior:
+        #   selectVC = [self selectVC]
+        #   tabBar = [selectVC tabBarController]
+        #   [tabBar setSelectedIndex:1]      # bottom “文件” tab
+        #   [selectVC signSuccess]           # top “已签名” page
 
         base = installclick_imp_vaddr
-        litpool_off = 36
+        litpool_off = 76
 
         patch = bytearray()
         def pc(): return base + len(patch)
 
-        patch += bytes([0xfd, 0x7d, 0xbf, 0xa9])  # STP X29,X30,[SP,#-16]!
+        patch += bytes([0xfd, 0x7b, 0xbe, 0xa9])  # STP X29,X30,[SP,#-32]!
+        patch += bytes([0xf3, 0x53, 0x01, 0xa9])  # STP X19,X20,[SP,#16]
         patch += bytes([0xfd, 0x03, 0x00, 0x91])  # ADD X29,SP,#0
 
         def adr_imm(rd, from_pc, to_va):
@@ -314,37 +314,37 @@ jobs:
             imm26 = (off >> 2) & 0x3FFFFFF
             return struct.pack("<I", 0x14000000 | imm26)
 
-        def ldp_post(rt1, rt2, rn, imm):
-            return struct.pack("<I", 0xA8C00000 | (((imm >> 3) & 0x7F) << 15) | (rt2 << 10) | (rn << 5) | rt1)
+        def load_selref(selref_vaddr):
+            out = bytearray()
+            adr_pc = base + len(patch) + len(out)
+            out += adr_imm(X1, adr_pc, base + litpool_off + len(literals))
+            out += ldr_pc_off(X1, 0)
+            literals.extend(struct.pack("<Q", selref_vaddr))
+            return out
 
-        X0,X1,X29,X30,SP = 0,1,29,30,31
+        X0,X1,X2,X19,X29,X30,SP = 0,1,2,19,29,30,31
+        literals = bytearray()
 
-        # ADR for sv_selref (litpool entry at base+36)
-        adr1_off = len(patch)   # = 8
-        adr1_pc  = base + adr1_off + 4  # PC = address of next instruction
-        patch += adr_imm(X1, adr1_pc, base + litpool_off)
-
-        ldr1_off = len(patch)   # = 12
-        patch += ldr_pc_off(X1, 0)    # LDR X1,[X1,#0] — no extra offset
-
+        patch += load_selref(sv_selref_vaddr)
         patch += bl(pc(), objc_msgSend_vaddr)
-        patch += ldp_post(X29, X30, SP, 16)
+        patch += bytes([0xf3, 0x03, 0x00, 0xaa])  # MOV X19,X0
 
-        # ADR for ss_selref (litpool entry at base+44)
-        adr2_off = len(patch)   # = 24
-        adr2_pc  = base + adr2_off + 4
-        patch += adr_imm(X1, adr2_pc, base + litpool_off + 8)
+        patch += load_selref(tb_selref_vaddr)
+        patch += bl(pc(), objc_msgSend_vaddr)
 
-        ldr2_off = len(patch)   # = 28
-        patch += ldr_pc_off(X1, 0)    # LDR X1,[X1,#0]
+        patch += load_selref(si_selref_vaddr)
+        patch += bytes([0x22, 0x00, 0x80, 0xd2])  # MOV X2,#1
+        patch += bl(pc(), objc_msgSend_vaddr)
 
+        patch += bytes([0xe0, 0x03, 0x13, 0xaa])  # MOV X0,X19
+        patch += bytes([0xf3, 0x53, 0x41, 0xa9])  # LDP X19,X20,[SP,#16]
+        patch += bytes([0xfd, 0x7b, 0xc2, 0xa8])  # LDP X29,X30,[SP],#32
+        patch += load_selref(ss_selref_vaddr)
         patch += b_tail(pc(), objc_msgSend_vaddr)
 
-        # Litpool: sv_selref then ss_selref 64-bit addresses
-        patch += struct.pack("<Q", sv_selref_vaddr)
-        patch += struct.pack("<Q", ss_selref_vaddr)
+        patch += literals
 
-        assert len(patch) == 52, f"patch size {len(patch)} (expected 52)"
+        assert len(patch) == 108, f"patch size {len(patch)} (expected 108)"
 
         data[installclick_imp_foff:installclick_imp_foff + len(patch)] = patch
         print(f"[+] Wrote {len(patch)}-byte ARM64 patch at file offset {installclick_imp_foff:#x}")
@@ -354,7 +354,7 @@ jobs:
         print("[+] Binary patched successfully")
         PYEOF
 
-    - name: Analyze signSuccess and verify patch
+    - name: Verify direct binary patch
       run: |
         python3 << 'PYEOF'
         import struct
@@ -363,44 +363,39 @@ jobs:
         with open(binary_path, "rb") as f:
             data = bytearray(f.read())
 
-        # 52-byte patch (44 code + 8 litpool)
+        # 108-byte patch (76 code + 32 litpool)
         ic_foff = 0x27aa1c
-        patch_bytes = data[ic_foff:ic_foff + 52]
+        patch_bytes = data[ic_foff:ic_foff + 108]
         print(f"[*] Bytes at 0x{ic_foff:x}: {patch_bytes.hex()}")
-        print(f"[*] Total patch area (52 bytes): {'OK' if len(patch_bytes) == 52 else f'WRONG ({len(patch_bytes)} bytes)'}")
-        print(f"[*] Code bytes (0-35): {patch_bytes[:36].hex()}")
-        print(f"[*] Litpool (36-51): {patch_bytes[36:52].hex()}")
+        print(f"[*] Total patch area (108 bytes): {'OK' if len(patch_bytes) == 108 else f'WRONG ({len(patch_bytes)} bytes)'}")
+        print(f"[*] Code bytes (0-75): {patch_bytes[:76].hex()}")
+        print(f"[*] Litpool (76-107): {patch_bytes[76:108].hex()}")
 
-        # Verify first instruction: STP X29,X30,[SP,#-16]! = 0xA9BF7DFD
+        # Verify first instruction: STP X29,X30,[SP,#-32]! = 0xA9BE7BFD
         w0 = struct.unpack_from("<I", patch_bytes, 0)[0]
-        print(f"[*] instr[0] = {w0:#010x}  {'OK (STP PRE)' if w0 == 0xA9BF7DFD else 'CHECK (expected 0xa9bf7dfd)'}")
+        print(f"[*] instr[0] = {w0:#010x}  {'OK (STP PRE)' if w0 == 0xA9BE7BFD else 'CHECK (expected 0xa9be7bfd)'}")
 
-        # Verify ADR[0] resolves to litpool entry at base+36
-        # ADR at offset 8: PC = base + 12
+        # Verify ADR[0] resolves to litpool entry at base+76
+        # ADR at offset 12: PC = base + 16
         base_ic = 0x10027aa1c
-        litpool_va = base_ic + 36
-        w2 = struct.unpack_from("<I", patch_bytes, 8)[0]
+        litpool_va = base_ic + 76
+        w2 = struct.unpack_from("<I", patch_bytes, 12)[0]
         immlo = (w2 >> 29) & 3; immhi = (w2 >> 5) & 0x7FFFF
         adr_imm = ((immhi << 2) | immlo)
         if adr_imm & 0x100000: adr_imm -= 0x200000  # sign-extend
-        adr1_target = base_ic + 12 + adr_imm
+        adr1_target = base_ic + 16 + adr_imm
         print(f"[*] ADR[0] target={adr1_target:#x}  {'OK (litpool)' if adr1_target == litpool_va else 'MISMATCH (want litpool)'}")
-        print(f"[*] LDR[0] at base+12 = {patch_bytes[12:16].hex()} (should be f9400001 = LDR X1,[X1,#0])")
-
-        # Verify ADR[1] resolves to litpool entry at base+44
-        w4 = struct.unpack_from("<I", patch_bytes, 24)[0]
-        immlo2 = (w4 >> 29) & 3; immhi2 = (w4 >> 5) & 0x7FFFF
-        adr_imm2 = ((immhi2 << 2) | immlo2)
-        if adr_imm2 & 0x100000: adr_imm2 -= 0x200000
-        adr2_target = base_ic + 28 + adr_imm2  # ADR at offset 24: PC = base+28
-        litpool_va2 = base_ic + 44
-        print(f"[*] ADR[1] target={adr2_target:#x}  {'OK (litpool+8)' if adr2_target == litpool_va2 else 'MISMATCH (want litpool+8)'}")
+        print(f"[*] LDR[0] at base+16 = {patch_bytes[16:20].hex()} (should be f9400001 = LDR X1,[X1,#0])")
 
         # Verify litpool contents
-        sv_selref = struct.unpack_from("<Q", patch_bytes, 36)[0]
-        ss_selref = struct.unpack_from("<Q", patch_bytes, 44)[0]
-        print(f"[*] litpool[0] sv_selref = {sv_selref:#x}  {'OK' if sv_selref == 0x100ee5670 else 'CHECK (want 0x100ee5670)'}")
-        print(f"[*] litpool[8] ss_selref = {ss_selref:#x}  {'OK' if ss_selref == 0x100eecca0 else 'CHECK (want 0x100eecca0)'}")
+        sv_selref = struct.unpack_from("<Q", patch_bytes, 76)[0]
+        tb_selref = struct.unpack_from("<Q", patch_bytes, 84)[0]
+        si_selref = struct.unpack_from("<Q", patch_bytes, 92)[0]
+        ss_selref = struct.unpack_from("<Q", patch_bytes, 100)[0]
+        print(f"[*] litpool[0] selectVC = {sv_selref:#x}")
+        print(f"[*] litpool[8] tabBarController = {tb_selref:#x}")
+        print(f"[*] litpool[16] setSelectedIndex: = {si_selref:#x}")
+        print(f"[*] litpool[24] signSuccess = {ss_selref:#x}")
 
         # 验证 selectVC getter 在 DASignProcessVC 的 method list 中存在
         def find_sections(data):
