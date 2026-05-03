@@ -95,7 +95,18 @@ if stubs_key in sections and symtab_off and indirectsymoff:
             break
 
 if not objc_msgSend_vaddr:
-    print("[!] _objc_msgSend not found"); sys.exit(1)
+    print("[!] _objc_msgSend not found")
+    print("[!] Available stubs:")
+    for i in range(min(10, stub_count)):
+        idx = read_u32(data, indirectsymoff + (reserved1 + i) * 4)
+        if idx < 0x40000000:
+            str_idx = read_u32(data, symtab_off + idx * 16)
+            j = strtab_off + str_idx
+            sym_name = b''
+            while j < len(data) and data[j] != 0:
+                sym_name += bytes([data[j]]); j += 1
+            print(f"  [{i}] {sym_name.decode()}")
+    sys.exit(1)
 
 # Methnames
 mn_key = ('__TEXT', '__objc_methnames')
@@ -110,7 +121,12 @@ tb_off = methnames_data.find(b'tabBarController\x00')
 si_off = methnames_data.find(b'setSelectedIndex:\x00')
 
 if ic_off < 0 or ss_off < 0 or tb_off < 0 or si_off < 0:
-    print("[!] Missing selectors: ic={0} ss={1} tb={2} si={3}".format(ic_off, ss_off, tb_off, si_off)); sys.exit(1)
+    print("[!] Missing selectors:")
+    print(f"  installClick: {ic_off}")
+    print(f"  signSuccess: {ss_off}")
+    print(f"  tabBarController: {tb_off}")
+    print(f"  setSelectedIndex: {si_off}")
+    sys.exit(1)
 
 ic_str_vaddr = mn_vaddr + ic_off
 ss_str_vaddr = mn_vaddr + ss_off
@@ -145,7 +161,13 @@ print("[+] tabBarController selref: {0:#x}".format(tb_selref_vaddr) if tb_selref
 print("[+] setSelectedIndex: selref: {0:#x}".format(si_selref_vaddr) if si_selref_vaddr else "[!] setSelectedIndex: selref not found")
 
 if not all([ic_selref_vaddr, ss_selref_vaddr, tb_selref_vaddr, si_selref_vaddr, sv_selref_vaddr]):
-    print("[!] Missing required selrefs"); sys.exit(1)
+    print("[!] Missing required selrefs:")
+    print(f"  installClick: {ic_selref_vaddr}")
+    print(f"  signSuccess: {ss_selref_vaddr}")
+    print(f"  tabBarController: {tb_selref_vaddr}")
+    print(f"  setSelectedIndex: {si_selref_vaddr}")
+    print(f"  selectVC: {sv_selref_vaddr}")
+    sys.exit(1)
 
 # Find installClick IMP
 classname = b'DASignProcessVC\x00'
