@@ -105,16 +105,15 @@ for search_foff in range(0, len(data) - 48, 8):
                 count = read_u32(data, ivars_foff + 4)
                 print(f"  [+] {count} ivars, entsize={entsize}")
 
+                selectvc_offset = None
+
                 for i in range(count):
                     ivar_base = ivars_foff + 8 + i * entsize
                     ivar_offset_ptr = read_u64(data, ivar_base)
                     ivar_name_ptr = read_u64(data, ivar_base + 8)
-                    ivar_type_ptr = read_u64(data, ivar_base + 16)
 
                     # Find ivar name
-                    ivar_name = "?"
-                    ivar_offset = -1
-
+                    ivar_name = None
                     for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
                         if vaddr2 <= ivar_name_ptr < vaddr2 + size2:
                             name_foff = foff2 + (ivar_name_ptr - vaddr2)
@@ -124,14 +123,23 @@ for search_foff in range(0, len(data) - 48, 8):
                             break
 
                     # Read offset value
+                    ivar_offset = None
                     for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
                         if vaddr2 <= ivar_offset_ptr < vaddr2 + size2:
                             offset_foff = foff2 + (ivar_offset_ptr - vaddr2)
                             ivar_offset = read_u32(data, offset_foff)
                             break
 
-                    print(f"    [{i}] {ivar_name}: offset={ivar_offset}")
+                    if ivar_name and ivar_offset is not None:
+                        if 'selectVC' in ivar_name:
+                            selectvc_offset = ivar_offset
+                            print(f"\n  *** FOUND: {ivar_name} at offset {ivar_offset} ***\n")
+                        else:
+                            print(f"  {ivar_name}: {ivar_offset}")
 
-                    if 'selectVC' in ivar_name:
-                        print(f"\n[+] *** Found {ivar_name} ivar at offset {ivar_offset}! ***\n")
+                if selectvc_offset is not None:
+                    print(f"\n[SUCCESS] _selectVC ivar offset = {selectvc_offset}")
+                    sys.exit(0)
+                else:
+                    print(f"\n[!] _selectVC not found in ivars")
                 break
