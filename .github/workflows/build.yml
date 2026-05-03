@@ -248,7 +248,8 @@ jobs:
         # ── ARM64 instruction encoders ──────────────────────────────────────
 
         def stp_pre(rt1, rt2, rn, imm):   # STP Xt1,Xt2,[Xn,#imm]!
-            imm7 = (imm // 8) & 0x7F
+            # imm7: 7-bit signed, bit6=sign. For -16: abs=16, abs//8-1=1, sign=|1<<6=0x40 => 0x3D
+            imm7 = ((abs(imm) // 8 - 1) | 0x40) if imm < 0 else ((imm // 8) & 0x7F)
             return struct.pack("<I", 0xA9800000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1)
 
         def ldp_post(rt1, rt2, rn, imm):  # LDP Xt1,Xt2,[Xn],#imm
