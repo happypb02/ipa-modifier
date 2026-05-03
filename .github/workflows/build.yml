@@ -16,9 +16,21 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
+    - name: Debug environment
+      run: |
+        echo "=== files in repo ==="
+        ls -la
+        echo "=== python3 version ==="
+        python3 --version
+        echo "=== patch_binary.py exists ==="
+        test -f patch_binary.py && echo "YES" || echo "NO"
+        echo "=== patch_binary.py size ==="
+        wc -l patch_binary.py
+        echo "=== binary exists ==="
+        test -f temp/Payload/DumpApp.app/DumpApp && echo "YES" || echo "NO"
+
     - name: Patch binary
-      run: python3 patch_binary.py
-      working-directory: .
+      run: python3 ./patch_binary.py 2>&1
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
