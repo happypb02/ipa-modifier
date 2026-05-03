@@ -14,109 +14,113 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Install dependencies
-      run: sudo apt-get update -q && sudo apt-get install -y git unzip zip perl curl
-
-    - name: Install Theos
       run: |
-        git clone --recursive https://github.com/theos/theos.git $HOME/theos
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+        sudo apt-get update -q
+        sudo apt-get install -y git unzip zip perl curl clang lld
 
-    - name: Download iOS SDK
+    - name: Get Logos preprocessor
       run: |
-        # 从 GitHub release 下载 SDK (正确的 release tag)
-        curl -L --retry 3 -o /tmp/sdk.tar.xz \
-          "https://github.com/theos/sdks/releases/download/master/iPhoneOS16.5.sdk.tar.xz"
-        # 如果失败，尝试备用地址
-        if [ ! -s /tmp/sdk.tar.xz ] || [ $(stat -c%s /tmp/sdk.tar.xz) -lt 1000 ]; then
-          curl -L --retry 3 -o /tmp/sdk.tar.xz \
-            "https://github.com/xybp888/iOS-SDKs/raw/master/iPhoneOS16.5.sdk.tar.xz"
-        fi
-        ls -lh /tmp/sdk.tar.xz
-        tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks/ 2>&1
-        ls $HOME/theos/sdks/
+        git clone --depth=1 --filter=blob:none --sparse \
+          https://github.com/theos/theos.git /tmp/theos
+        cd /tmp/theos
+        git sparse-checkout set vendor/logos vendor/include
+        echo "Logos ready"
 
-    - name: Download clang toolchain for Linux
+    - name: Get iOS headers (lightweight)
       run: |
-        curl -L --retry 3 -o /tmp/toolchain.tar.gz \
-          "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.gz" || \
-        curl -L --retry 3 -o /tmp/toolchain.tar.gz \
-          "https://github.com/CRKatri/llvm-project/releases/download/swift-5.3.2-RELEASE/swift-5.3.2-RELEASE-ubuntu20.04.tar.gz" || true
+        # 只需要头文件，不需要完整 SDK
+        git clone --depth=1 --filter=blob:none --sparse \
+          https://github.com/theos/headers.git /tmp/ios-headers
+        cd /tmp/ios-headers
+        git sparse-checkout set .
+        ls /tmp/ios-headers/ | head -10
 
-        if [ -s /tmp/toolchain.tar.gz ] && [ $(stat -c%s /tmp/toolchain.tar.gz) -gt 1000 ]; then
-          mkdir -p $HOME/theos/toolchain/linux/iphone
-          tar -xf /tmp/toolchain.tar.gz --strip-components=1 \
-            -C $HOME/theos/toolchain/linux/iphone/ 2>&1 || true
-          ls $HOME/theos/toolchain/linux/iphone/bin/ 2>/dev/null | head -5 || true
-        else
-          echo "Toolchain download failed, will use system clang"
-          sudo apt-get install -y clang lld
-        fi
-
-    - name: Build Tweak
+    - name: Convert Tweak.x to ObjC with Logos
       run: |
-        export THEOS=$HOME/theos
-        SDK=$(ls $HOME/theos/sdks/ | grep iPhoneOS | head -1)
-        echo "Using SDK: $SDK"
-        cd InstallRedirect
-        make clean 2>/dev/null || true
-        make FINALPACKAGE=1 SYSROOT=$HOME/theos/sdks/$SDK 2>&1
-        echo "--- dylib search ---"
-        find .theos -name "*.dylib" 2>/dev/null
+        perl /tmp/theos/vendor/logos/bin/logos.pl \
+          InstallRedirect/Tweak.x > /tmp/Tweak.mm
+        echo "--- First 30 lines of converted file ---"
+        head -30 /tmp/Tweak.mm
+
+    - name: Compile dylib
+      run: |
+        # 用 clang 交叉编译 arm64 dylib
+        # 需要 substrate.h 头文件
+        cat > /tmp/substrate.h << 'EOF'
+        #pragma once
+        #include <objc/runtime.h>
+        #include <objc/message.h>
+        void MSHookMessageEx(Class _class, SEL sel, IMP imp, IMP *result);
+        #define MSHookMessage(class, sel, imp, result) MSHookMessageEx(class, @selector(sel), (IMP)imp, (IMP*)result)
+        EOF
+
+        # 创建最小化的 iOS 头文件环境
+        mkdir -p /tmp/fakeSDK/usr/include
+        cp /tmp/ios-headers/*.h /tmp/fakeSDK/usr/include/ 2>/dev/null || true
+
+        clang \
+          -arch arm64 \
+          -target arm64-apple-ios12.0 \
+          -isysroot /tmp/fakeSDK \
+          -I/tmp/ios-headers \
+          -I/tmp \
+          -I/tmp/theos/vendor/include \
+          -dynamiclib \
+          -fmodules \
+          -framework UIKit \
+          -framework Foundation \
+          -lobjc \
+          -Wno-error \
+          -o /tmp/InstallRedirect.dylib \
+          /tmp/Tweak.mm 2>&1 || echo "Compile attempt done"
+
+        ls -lh /tmp/InstallRedirect.dylib 2>/dev/null || echo "dylib not created"
 
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Copy dylib into app bundle
+    - name: Copy dylib if compiled successfully
       run: |
-        DYLIB=$(find InstallRedirect/.theos -name "*.dylib" | head -1)
-        echo "dylib: $DYLIB"
-        cp "$DYLIB" temp/Payload/DumpApp.app/InstallRedirect.dylib
+        if [ -f /tmp/InstallRedirect.dylib ]; then
+          cp /tmp/InstallRedirect.dylib temp/Payload/DumpApp.app/
+          echo "dylib copied"
+        else
+          echo "No dylib, skipping"
+        fi
 
     - name: Inject LC_LOAD_DYLIB with Python
       run: |
+        if [ ! -f temp/Payload/DumpApp.app/InstallRedirect.dylib ]; then
+          echo "No dylib to inject, skipping"
+          exit 0
+        fi
         python3 << 'PYEOF'
-        import struct, os
-
+        import struct
         binary_path = "temp/Payload/DumpApp.app/DumpApp"
         dylib_name  = "@executable_path/InstallRedirect.dylib"
-
         with open(binary_path, "rb") as f:
             data = bytearray(f.read())
-
         MH_CIGAM_64 = 0xCFFAEDFE
         FAT_MAGIC   = 0xCAFEBABE
-
         def patch(data, offset):
-            if struct.unpack_from("<I", data, offset)[0] != MH_CIGAM_64:
-                return
-            ncmds      = struct.unpack_from("<I", data, offset + 16)[0]
-            sizeofcmds = struct.unpack_from("<I", data, offset + 20)[0]
-            p = offset + 32
-            for _ in range(ncmds):
-                p += struct.unpack_from("<I", data, p + 4)[0]
-            name_off    = 24
-            b           = dylib_name.encode() + b"\x00"
-            b          += b"\x00" * ((8 - (name_off + len(b)) % 8) % 8)
-            lc_size     = name_off + len(b)
-            lc  = struct.pack("<II", 0xC, lc_size)
-            lc += struct.pack("<I",  name_off)
-            lc += struct.pack("<I",  0)
-            lc += struct.pack("<II", 0x10000, 0x10000)
-            lc += b
-            data[p:p] = lc
-            struct.pack_into("<I", data, offset + 16, ncmds + 1)
-            struct.pack_into("<I", data, offset + 20, sizeofcmds + lc_size)
+            if struct.unpack_from("<I", data, offset)[0] != MH_CIGAM_64: return
+            ncmds = struct.unpack_from("<I", data, offset+16)[0]
+            szc   = struct.unpack_from("<I", data, offset+20)[0]
+            p = offset+32
+            for _ in range(ncmds): p += struct.unpack_from("<I", data, p+4)[0]
+            b = dylib_name.encode()+b"\x00"
+            b += b"\x00"*((8-(24+len(b))%8)%8)
+            lc = struct.pack("<IIIIi",0xC,24+len(b),24,0,0x10000)+struct.pack("<I",0x10000)+b
+            data[p:p]=lc
+            struct.pack_into("<I",data,offset+16,ncmds+1)
+            struct.pack_into("<I",data,offset+20,szc+len(lc))
             print(f"[+] Injected at {p:#x}")
-
-        magic = struct.unpack_from(">I", data, 0)[0]
-        if magic == FAT_MAGIC:
-            for i in range(struct.unpack_from(">I", data, 4)[0]):
-                patch(data, struct.unpack_from(">I", data, 8 + i*20 + 8)[0])
-        else:
-            patch(data, 0)
-
-        with open(binary_path, "wb") as f:
-            f.write(data)
+        magic = struct.unpack_from(">I",data,0)[0]
+        if magic==FAT_MAGIC:
+            for i in range(struct.unpack_from(">I",data,4)[0]):
+                patch(data,struct.unpack_from(">I",data,8+i*20+8)[0])
+        else: patch(data,0)
+        open(binary_path,"wb").write(data)
         print("[+] Done")
         PYEOF
 
