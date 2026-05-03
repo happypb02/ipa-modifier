@@ -167,13 +167,40 @@ if installclick_imp_foff is None:
 
 print(f"[+] installClick IMP file offset: {installclick_imp_foff:#x}")
 
-# Read the first 64 bytes of installClick to analyze
-print("\n[*] First 64 bytes of installClick:")
-code_bytes = data[installclick_imp_foff:installclick_imp_foff+64]
-for i in range(0, min(64, len(code_bytes)), 4):
-    insn = struct.unpack("<I", code_bytes[i:i+4])[0]
-    print(f"  {installclick_imp_vaddr+i:#x}: {insn:08x}")
+# Check if this is actual code or data
+print("\n[*] Checking installClick location...")
+first_4_bytes = read_u32(data, installclick_imp_foff)
+print(f"First instruction: {first_4_bytes:#010x}")
 
-# Don't patch yet - let's analyze first
+# Check if it's in __TEXT segment (code)
+in_text = False
+for (seg, sect), (foff, vaddr, size) in sections.items():
+    if seg == '__TEXT' and foff <= installclick_imp_foff < foff + size:
+        in_text = True
+        print(f"[+] installClick is in {seg}::{sect}")
+        break
+
+if not in_text:
+    print("[!] installClick IMP is not in __TEXT segment - this is wrong!")
+    # Try to find it in __TEXT,__text
+    text_key = ('__TEXT', '__text')
+    if text_key in sections:
+        text_foff, text_vaddr, text_size = sections[text_key]
+        print(f"[*] Searching for installClick in __TEXT::__text...")
+
+        # Search for references to installClick selector in code
+        ic_selref_bytes = struct.pack("<Q", ic_selref_vaddr)
+        for i in range(text_foff, text_foff + text_size - 8, 4):
+            # Look for ADR/ADRP instructions that might reference the selref
+            pass
+    sys.exit(1)
+
+# Read as ARM64 instructions
+print("\n[*] First 16 ARM64 instructions:")
+for i in range(0, 64, 4):
+    insn = read_u32(data, installclick_imp_foff + i)
+    addr = installclick_imp_vaddr + i
+    print(f"  {addr:#x}: {insn:08x}")
+
 print("\n[!] Skipping patch - need to analyze code first")
 sys.exit(0)
