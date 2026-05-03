@@ -19,8 +19,10 @@ jobs:
     - name: Compile hook dylib
       run: |
         clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
+          -miphoneos-version-min=12.0 \
           -framework Foundation -framework UIKit \
-          -dynamiclib -o libhook.dylib hook.m
+          -dynamiclib -o libhook.dylib hook.m \
+          -Wl,-install_name,@executable_path/Frameworks/libhook.dylib
 
     - name: Inject dylib
       run: |
