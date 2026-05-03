@@ -119,19 +119,28 @@ ic_off = methnames_data.find(b'installClick\x00')
 ss_off = methnames_data.find(b'signSuccess\x00')
 tb_off = methnames_data.find(b'tabBarController\x00')
 si_off = methnames_data.find(b'setSelectedIndex:\x00')
+sg_off = methnames_data.find(b'segmentedTitleView\x00')
+sse_off = methnames_data.find(b'setSelectedSegmentIndex:\x00')
+sac_off = methnames_data.find(b'sendActionsForControlEvents:\x00')
 
-if ic_off < 0 or ss_off < 0 or tb_off < 0 or si_off < 0:
+if ic_off < 0 or ss_off < 0 or tb_off < 0 or si_off < 0 or sg_off < 0 or sse_off < 0 or sac_off < 0:
     print("[!] Missing selectors:")
     print(f"  installClick: {ic_off}")
     print(f"  signSuccess: {ss_off}")
     print(f"  tabBarController: {tb_off}")
     print(f"  setSelectedIndex: {si_off}")
+    print(f"  segmentedTitleView: {sg_off}")
+    print(f"  setSelectedSegmentIndex: {sse_off}")
+    print(f"  sendActionsForControlEvents: {sac_off}")
     sys.exit(1)
 
 ic_str_vaddr = mn_vaddr + ic_off
 ss_str_vaddr = mn_vaddr + ss_off
 tb_str_vaddr = mn_vaddr + tb_off
 si_str_vaddr = mn_vaddr + si_off
+sg_str_vaddr = mn_vaddr + sg_off
+sse_str_vaddr = mn_vaddr + sse_off
+sac_str_vaddr = mn_vaddr + sac_off
 
 # Selrefs
 selrefs_key = ('__DATA', '__objc_selrefs')
@@ -140,12 +149,16 @@ if selrefs_key not in sections:
 sr_foff, sr_vaddr, sr_size = sections[selrefs_key]
 
 ic_selref_vaddr = ss_selref_vaddr = tb_selref_vaddr = si_selref_vaddr = sv_selref_vaddr = None
+sg_selref_vaddr = sse_selref_vaddr = sac_selref_vaddr = None
 for i in range(0, sr_size, 8):
     ptr = read_u64(data, sr_foff + i)
     if ptr == ic_str_vaddr: ic_selref_vaddr = sr_vaddr + i
     if ptr == ss_str_vaddr: ss_selref_vaddr = sr_vaddr + i
     if ptr == tb_str_vaddr: tb_selref_vaddr = sr_vaddr + i
     if ptr == si_str_vaddr: si_selref_vaddr = sr_vaddr + i
+    if ptr == sg_str_vaddr: sg_selref_vaddr = sr_vaddr + i
+    if ptr == sse_str_vaddr: sse_selref_vaddr = sr_vaddr + i
+    if ptr == sac_str_vaddr: sac_selref_vaddr = sr_vaddr + i
     # Also find selectVC selref for the getter
     if sv_selref_vaddr is None:
         sv_off2 = methnames_data.find(b'selectVC\x00')
@@ -159,14 +172,20 @@ print("[+] installClick selref: {0:#x}".format(ic_selref_vaddr) if ic_selref_vad
 print("[+] signSuccess  selref: {0:#x}".format(ss_selref_vaddr) if ss_selref_vaddr else "[!] signSuccess selref not found")
 print("[+] tabBarController selref: {0:#x}".format(tb_selref_vaddr) if tb_selref_vaddr else "[!] tabBarController selref not found")
 print("[+] setSelectedIndex: selref: {0:#x}".format(si_selref_vaddr) if si_selref_vaddr else "[!] setSelectedIndex: selref not found")
+print("[+] segmentedTitleView selref: {0:#x}".format(sg_selref_vaddr) if sg_selref_vaddr else "[!] segmentedTitleView selref not found")
+print("[+] setSelectedSegmentIndex: selref: {0:#x}".format(sse_selref_vaddr) if sse_selref_vaddr else "[!] setSelectedSegmentIndex: selref not found")
+print("[+] sendActionsForControlEvents: selref: {0:#x}".format(sac_selref_vaddr) if sac_selref_vaddr else "[!] sendActionsForControlEvents: selref not found")
 
-if not all([ic_selref_vaddr, ss_selref_vaddr, tb_selref_vaddr, si_selref_vaddr, sv_selref_vaddr]):
+if not all([ic_selref_vaddr, ss_selref_vaddr, tb_selref_vaddr, si_selref_vaddr, sv_selref_vaddr, sg_selref_vaddr, sse_selref_vaddr, sac_selref_vaddr]):
     print("[!] Missing required selrefs:")
     print(f"  installClick: {ic_selref_vaddr}")
     print(f"  signSuccess: {ss_selref_vaddr}")
     print(f"  tabBarController: {tb_selref_vaddr}")
     print(f"  setSelectedIndex: {si_selref_vaddr}")
     print(f"  selectVC: {sv_selref_vaddr}")
+    print(f"  segmentedTitleView: {sg_selref_vaddr}")
+    print(f"  setSelectedSegmentIndex: {sse_selref_vaddr}")
+    print(f"  sendActionsForControlEvents: {sac_selref_vaddr}")
     sys.exit(1)
 
 # Find installClick IMP
@@ -232,15 +251,15 @@ def b_insn(pc_va, target_va):
     imm26 = ((off >> 2) & 0x3FFFFFF)
     return struct.pack("<I", 0x14000000 | imm26)
 
-# Litpool starts at base+80 (after 80 bytes of code)
-litpool_va = base + 80
+# Litpool starts at base+112 (after 112 bytes of code)
+litpool_va = base + 112
 
 patch = bytearray()
 patch += bytes([0xa9, 0xbf, 0x7b, 0xfd])   # STP X29,X30,[SP,#-32]!
 patch += bytes([0xa9, 0x03, 0x53, 0xf3])   # STP X19,X20,[SP,#16]
 patch += bytes([0x91, 0x00, 0x3f, 0xfd])   # ADD X29,SP,#0
 
-# [self selectVC]
+# [self selectVC] → X19
 patch += adr_imm(1, base+12, litpool_va)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += bl_insn(base+20, objc_msgSend_vaddr)
@@ -251,33 +270,50 @@ patch += adr_imm(1, base+28, litpool_va+8)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += bl_insn(base+36, objc_msgSend_vaddr)
 
-# [tabBar setSelectedIndex:2]
-patch += bytes([0xd2, 0x80, 0x00, 0x42])   # MOV X2,#2
+# [tabBar setSelectedIndex:1]
+patch += bytes([0xd2, 0x80, 0x00, 0x22])   # MOV X2,#1
 patch += adr_imm(1, base+44, litpool_va+16)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += bl_insn(base+52, objc_msgSend_vaddr)
 
-# Restore X0 = selectVC result
+# [selectVC segmentedTitleView] → X20
 patch += bytes([0xaa, 0x1d, 0x03, 0xe0])   # MOV X0,X19
+patch += adr_imm(1, base+60, litpool_va+24)
+patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
+patch += bl_insn(base+68, objc_msgSend_vaddr)
+patch += bytes([0xaa, 0x00, 0x03, 0xf4])   # MOV X20,X0
+
+# [segment setSelectedSegmentIndex:1]
+patch += bytes([0xd2, 0x80, 0x00, 0x22])   # MOV X2,#1
+patch += adr_imm(1, base+80, litpool_va+32)
+patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
+patch += bl_insn(base+88, objc_msgSend_vaddr)
+
+# [segment sendActionsForControlEvents:0x1000]
+patch += bytes([0xaa, 0x1e, 0x03, 0xe0])   # MOV X0,X20
+patch += bytes([0xd2, 0xa0, 0x00, 0x02])   # MOV X2,#0x1000
+patch += adr_imm(1, base+100, litpool_va+40)
+patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
+patch += bl_insn(base+108, objc_msgSend_vaddr)
+
+# Restore and return
 patch += bytes([0xa9, 0x43, 0x53, 0xf3])   # LDP X19,X20,[SP,#16]
 patch += bytes([0xa8, 0xc1, 0x7b, 0xfd])   # LDP X29,X30,[SP],#32
+patch += bytes([0xd6, 0x5f, 0x03, 0xc0])   # RET
 
-# [selectVC signSuccess] - tail call
-patch += adr_imm(1, base+68, litpool_va+24)
-patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
-patch += b_insn(base+76, objc_msgSend_vaddr)
-
-assert len(patch) == 80, "code part is {0} bytes (expected 80)".format(len(patch))
+assert len(patch) == 112, "code part is {0} bytes (expected 112)".format(len(patch))
 
 # Litpool
-patch += struct.pack("<Q", sv_selref_vaddr)  # selectVC selref
-patch += struct.pack("<Q", tb_selref_vaddr)  # tabBarController selref
-patch += struct.pack("<Q", si_selref_vaddr)  # setSelectedIndex: selref
-patch += struct.pack("<Q", ss_selref_vaddr)  # signSuccess selref
+patch += struct.pack("<Q", sv_selref_vaddr)   # selectVC selref
+patch += struct.pack("<Q", tb_selref_vaddr)   # tabBarController selref
+patch += struct.pack("<Q", si_selref_vaddr)   # setSelectedIndex: selref
+patch += struct.pack("<Q", sg_selref_vaddr)   # segmentedTitleView selref
+patch += struct.pack("<Q", sse_selref_vaddr)  # setSelectedSegmentIndex: selref
+patch += struct.pack("<Q", sac_selref_vaddr)  # sendActionsForControlEvents: selref
 
-assert len(patch) == 112, "patch size {0} (expected 112)".format(len(patch))
+assert len(patch) == 160, "patch size {0} (expected 160)".format(len(patch))
 
-data[installclick_imp_foff:installclick_imp_foff + 112] = patch
+data[installclick_imp_foff:installclick_imp_foff + 160] = patch
 print("[+] Wrote {0}-byte ARM64 patch at file offset {1:#x}".format(len(patch), installclick_imp_foff))
 
 with open(binary_path, "wb") as f:
