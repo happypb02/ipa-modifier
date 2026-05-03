@@ -16,8 +16,8 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Analyze signSuccess method
-      run: python3 find_signsuccess.py
+    - name: Find selectVC ivar offset
+      run: python3 find_ivar.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
