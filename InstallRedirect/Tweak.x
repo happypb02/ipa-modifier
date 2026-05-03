@@ -1,109 +1,103 @@
-﻿#import <UIKit/UIKit.h>
+#import <UIKit/UIKit.h>
 #import <objc/message.h>
 
-static UIViewController *IRFindViewController(UIViewController *root, NSString *className) {
-    if (!root) return nil;
-    if ([NSStringFromClass([root class]) isEqualToString:className]) return root;
+@interface DASelectAppVC : UIViewController
+@property (nonatomic, strong) UISegmentedControl *segmentedTitleView;
+@property (nonatomic, strong) UIViewController *signedVC;
+@property (nonatomic, strong) UIViewController *fileVC;
+- (void)signSuccess;
+- (void)setSelect;
+@end
 
-    if ([root isKindOfClass:[UINavigationController class]]) {
-        for (UIViewController *vc in ((UINavigationController *)root).viewControllers) {
-            UIViewController *found = IRFindViewController(vc, className);
-            if (found) return found;
-        }
-    }
-
-    if ([root isKindOfClass:[UITabBarController class]]) {
-        for (UIViewController *vc in ((UITabBarController *)root).viewControllers) {
-            UIViewController *found = IRFindViewController(vc, className);
-            if (found) return found;
-        }
-    }
-
-    for (UIViewController *vc in root.childViewControllers) {
-        UIViewController *found = IRFindViewController(vc, className);
-        if (found) return found;
-    }
-
-    return nil;
-}
+@interface DASignProcessVC : UIViewController
+@property (nonatomic, strong) DASelectAppVC *selectVC;
+- (void)installClick;
+@end
 
 static UIViewController *IRRootViewController(void) {
-    UIWindow *keyWindow = nil;
-    for (UIWindow *window in [UIApplication sharedApplication].windows) {
-        if (window.isKeyWindow) {
-            keyWindow = window;
-            break;
-        }
-    }
-    if (!keyWindow) keyWindow = [UIApplication sharedApplication].windows.firstObject;
-    return keyWindow.rootViewController;
+    for (UIWindow *w in [UIApplication sharedApplication].windows)
+        if (w.isKeyWindow) return w.rootViewController;
+    return [UIApplication sharedApplication].windows.firstObject.rootViewController;
 }
 
-static void IRSwitchSelectAppToSigned(UIViewController *selectVC) {
-    if (!selectVC) return;
-
-    if ([selectVC respondsToSelector:@selector(signSuccess)]) {
-        ((void (*)(id, SEL))objc_msgSend)(selectVC, @selector(signSuccess));
-        NSLog(@"[InstallRedirect] called DASelectAppVC signSuccess");
-        return;
-    }
-
-    if ([selectVC respondsToSelector:@selector(segmentedTitleView)]) {
-        id segmented = ((id (*)(id, SEL))objc_msgSend)(selectVC, @selector(segmentedTitleView));
-        if ([segmented respondsToSelector:@selector(setSelectedSegmentIndex:)]) {
-            ((void (*)(id, SEL, NSInteger))objc_msgSend)(segmented, @selector(setSelectedSegmentIndex:), 1);
-            NSLog(@"[InstallRedirect] set segment index 1");
+static DASelectAppVC *IRFindSelectAppVC(UIViewController *root) {
+    if (!root) return nil;
+    if ([root isKindOfClass:NSClassFromString(@"DASelectAppVC")]) return (DASelectAppVC *)root;
+    if ([root isKindOfClass:[UITabBarController class]])
+        for (UIViewController *vc in ((UITabBarController *)root).viewControllers) {
+            DASelectAppVC *r = IRFindSelectAppVC(vc); if (r) return r;
         }
+    if ([root isKindOfClass:[UINavigationController class]])
+        for (UIViewController *vc in ((UINavigationController *)root).viewControllers) {
+            DASelectAppVC *r = IRFindSelectAppVC(vc); if (r) return r;
+        }
+    for (UIViewController *vc in root.childViewControllers) {
+        DASelectAppVC *r = IRFindSelectAppVC(vc); if (r) return r;
     }
-
-    if ([selectVC respondsToSelector:@selector(setSelect)]) {
-        ((void (*)(id, SEL))objc_msgSend)(selectVC, @selector(setSelect));
-        NSLog(@"[InstallRedirect] called setSelect");
-    }
+    return nil;
 }
 
 %hook DASignProcessVC
 
 - (void)installClick {
-    NSLog(@"[InstallRedirect] intercept DASignProcessVC installClick");
+    NSLog(@"[IR] installClick intercepted");
 
-    UIViewController *root = IRRootViewController();
-    UIViewController *selectVC = IRFindViewController(root, @"DASelectAppVC");
+    // 优先用 self.selectVC 属性直接拿到 DASelectAppVC
+    DASelectAppVC *selectVC = nil;
+    if ([self respondsToSelector:@selector(selectVC)]) {
+        selectVC = ((DASelectAppVC *(*)(id,SEL))objc_msgSend)(self, @selector(selectVC));
+    }
+    // 备用：从视图层级查找
+    if (!selectVC) {
+        selectVC = IRFindSelectAppVC(IRRootViewController());
+    }
 
     if (!selectVC) {
-        NSLog(@"[InstallRedirect] DASelectAppVC not found, fallback original installClick");
+        NSLog(@"[IR] DASelectAppVC not found, fallback");
         %orig;
         return;
     }
 
+    // 1. 先切换 TabBar 到 DASelectAppVC 所在的 tab
     UITabBarController *tabBar = selectVC.tabBarController;
     if (tabBar) {
         UIViewController *candidate = selectVC;
-        while (candidate.parentViewController && candidate.parentViewController != tabBar) {
+        while (candidate.parentViewController && candidate.parentViewController != tabBar)
             candidate = candidate.parentViewController;
-        }
-        NSUInteger index = [tabBar.viewControllers indexOfObject:candidate];
-        if (index != NSNotFound) {
-            tabBar.selectedIndex = index;
-            NSLog(@"[InstallRedirect] selected tab %lu", (unsigned long)index);
+        NSUInteger idx = [tabBar.viewControllers indexOfObject:candidate];
+        if (idx != NSNotFound) {
+            tabBar.selectedIndex = idx;
+            NSLog(@"[IR] switched to tab %lu", (unsigned long)idx);
         }
     }
 
+    // 2. 如果在 nav 栈里，pop 回 DASelectAppVC
     UINavigationController *nav = selectVC.navigationController;
     if (nav && [nav.viewControllers containsObject:selectVC]) {
         [nav popToViewController:selectVC animated:YES];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            IRSwitchSelectAppToSigned(selectVC);
-        });
-        NSLog(@"[InstallRedirect] pop to DASelectAppVC then switch signed");
-        return;
     }
 
-    IRSwitchSelectAppToSigned(selectVC);
+    // 3. 延迟切换 segmentedTitleView 到"已定制"(index 1)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UISegmentedControl *seg = selectVC.segmentedTitleView;
+        if (seg && seg.numberOfSegments > 1) {
+            seg.selectedSegmentIndex = 1;
+            // 手动触发 segmentedControl 的 valueChanged 事件，让页面真正切换
+            [seg sendActionsForControlEvents:UIControlEventValueChanged];
+            NSLog(@"[IR] segmentedTitleView switched to index 1 (已定制)");
+        } else {
+            // 备用：调用 signSuccess
+            if ([selectVC respondsToSelector:@selector(signSuccess)]) {
+                [selectVC signSuccess];
+                NSLog(@"[IR] called signSuccess");
+            }
+        }
+    });
 }
 
 %end
 
 %ctor {
-    NSLog(@"[InstallRedirect] loaded");
+    NSLog(@"[IR] InstallRedirect loaded");
 }

@@ -13,66 +13,111 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Install dependencies
+      run: sudo apt-get update -q && sudo apt-get install -y git unzip zip perl curl
+
+    - name: Install Theos
+      run: |
+        git clone --recursive https://github.com/theos/theos.git $HOME/theos
+        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+    - name: Download iOS SDK
+      run: |
+        # 从 GitHub release 下载 SDK (正确的 release tag)
+        curl -L --retry 3 -o /tmp/sdk.tar.xz \
+          "https://github.com/theos/sdks/releases/download/master/iPhoneOS16.5.sdk.tar.xz"
+        # 如果失败，尝试备用地址
+        if [ ! -s /tmp/sdk.tar.xz ] || [ $(stat -c%s /tmp/sdk.tar.xz) -lt 1000 ]; then
+          curl -L --retry 3 -o /tmp/sdk.tar.xz \
+            "https://github.com/xybp888/iOS-SDKs/raw/master/iPhoneOS16.5.sdk.tar.xz"
+        fi
+        ls -lh /tmp/sdk.tar.xz
+        tar -xf /tmp/sdk.tar.xz -C $HOME/theos/sdks/ 2>&1
+        ls $HOME/theos/sdks/
+
+    - name: Download clang toolchain for Linux
+      run: |
+        curl -L --retry 3 -o /tmp/toolchain.tar.gz \
+          "https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.gz" || \
+        curl -L --retry 3 -o /tmp/toolchain.tar.gz \
+          "https://github.com/CRKatri/llvm-project/releases/download/swift-5.3.2-RELEASE/swift-5.3.2-RELEASE-ubuntu20.04.tar.gz" || true
+
+        if [ -s /tmp/toolchain.tar.gz ] && [ $(stat -c%s /tmp/toolchain.tar.gz) -gt 1000 ]; then
+          mkdir -p $HOME/theos/toolchain/linux/iphone
+          tar -xf /tmp/toolchain.tar.gz --strip-components=1 \
+            -C $HOME/theos/toolchain/linux/iphone/ 2>&1 || true
+          ls $HOME/theos/toolchain/linux/iphone/bin/ 2>/dev/null | head -5 || true
+        else
+          echo "Toolchain download failed, will use system clang"
+          sudo apt-get install -y clang lld
+        fi
+
+    - name: Build Tweak
+      run: |
+        export THEOS=$HOME/theos
+        SDK=$(ls $HOME/theos/sdks/ | grep iPhoneOS | head -1)
+        echo "Using SDK: $SDK"
+        cd InstallRedirect
+        make clean 2>/dev/null || true
+        make FINALPACKAGE=1 SYSROOT=$HOME/theos/sdks/$SDK 2>&1
+        echo "--- dylib search ---"
+        find .theos -name "*.dylib" 2>/dev/null
+
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Deep analysis of DASelectAppVC and DASignProcessVC
+    - name: Copy dylib into app bundle
+      run: |
+        DYLIB=$(find InstallRedirect/.theos -name "*.dylib" | head -1)
+        echo "dylib: $DYLIB"
+        cp "$DYLIB" temp/Payload/DumpApp.app/InstallRedirect.dylib
+
+    - name: Inject LC_LOAD_DYLIB with Python
       run: |
         python3 << 'PYEOF'
-        import struct, re
+        import struct, os
 
-        with open("temp/Payload/DumpApp.app/DumpApp", "rb") as f:
-            data = f.read()
+        binary_path = "temp/Payload/DumpApp.app/DumpApp"
+        dylib_name  = "@executable_path/InstallRedirect.dylib"
 
-        def find_strings_containing(keyword):
-            results = []
-            kb = keyword.encode()
-            start = 0
-            while True:
-                p = data.find(kb, start)
-                if p == -1:
-                    break
-                s = p
-                while s > 0 and data[s-1] != 0:
-                    s -= 1
-                e = p
-                while e < len(data) and data[e] != 0:
-                    e += 1
-                method = data[s:e].decode('utf-8', errors='ignore')
-                if method and len(method) < 150:
-                    results.append((s, method))
-                start = e + 1
-            return results
+        with open(binary_path, "rb") as f:
+            data = bytearray(f.read())
 
-        # DASelectAppVC 的所有方法
-        print("=== DASelectAppVC methods ===")
-        for off, m in find_strings_containing("DASelectAppVC"):
-            print(f"  {off:#x}: {m}")
+        MH_CIGAM_64 = 0xCFFAEDFE
+        FAT_MAGIC   = 0xCAFEBABE
 
-        # 找 segment / tab 相关方法
-        print("\n=== segment related ===")
-        for off, m in find_strings_containing("segment"):
-            if len(m) < 80:
-                print(f"  {off:#x}: {m}")
+        def patch(data, offset):
+            if struct.unpack_from("<I", data, offset)[0] != MH_CIGAM_64:
+                return
+            ncmds      = struct.unpack_from("<I", data, offset + 16)[0]
+            sizeofcmds = struct.unpack_from("<I", data, offset + 20)[0]
+            p = offset + 32
+            for _ in range(ncmds):
+                p += struct.unpack_from("<I", data, p + 4)[0]
+            name_off    = 24
+            b           = dylib_name.encode() + b"\x00"
+            b          += b"\x00" * ((8 - (name_off + len(b)) % 8) % 8)
+            lc_size     = name_off + len(b)
+            lc  = struct.pack("<II", 0xC, lc_size)
+            lc += struct.pack("<I",  name_off)
+            lc += struct.pack("<I",  0)
+            lc += struct.pack("<II", 0x10000, 0x10000)
+            lc += b
+            data[p:p] = lc
+            struct.pack_into("<I", data, offset + 16, ncmds + 1)
+            struct.pack_into("<I", data, offset + 20, sizeofcmds + lc_size)
+            print(f"[+] Injected at {p:#x}")
 
-        # 找 signed / sign 相关方法
-        print("\n=== sign related methods ===")
-        for off, m in find_strings_containing("sign"):
-            if len(m) < 80 and not m.startswith("T@") and not m.startswith("_"):
-                print(f"  {off:#x}: {m}")
+        magic = struct.unpack_from(">I", data, 0)[0]
+        if magic == FAT_MAGIC:
+            for i in range(struct.unpack_from(">I", data, 4)[0]):
+                patch(data, struct.unpack_from(">I", data, 8 + i*20 + 8)[0])
+        else:
+            patch(data, 0)
 
-        # 找 selectVC 属性
-        print("\n=== selectVC related ===")
-        for off, m in find_strings_containing("selectVC"):
-            print(f"  {off:#x}: {m}")
-
-        # 找 setSelect / switchTo / switchTab 相关
-        print("\n=== switch/tab methods ===")
-        for kw in ["setSelect", "switchTo", "switchTab", "showSigned", "signedList", "signList", "已定制", "customized"]:
-            for off, m in find_strings_containing(kw):
-                if len(m) < 100:
-                    print(f"  [{kw}] {off:#x}: {m}")
-
+        with open(binary_path, "wb") as f:
+            f.write(data)
+        print("[+] Done")
         PYEOF
 
     - name: Remove old signature
