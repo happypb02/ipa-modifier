@@ -18,7 +18,16 @@ jobs:
 
     - name: Patch binary
       run: |
-        python3 patch_binary.py
+        python3 patch_binary.py 2>&1 | tee patch_output.log
+        exit ${PIPESTATUS[0]}
+
+    - name: Upload patch log on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: patch-log
+        path: patch_output.log
+        retention-days: 1
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
