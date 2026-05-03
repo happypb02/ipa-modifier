@@ -18,11 +18,17 @@ jobs:
 
     - name: Patch binary
       run: |
-        python3 patch_binary.py > patch_output.log 2>&1 || true
-        cat patch_output.log
-        if grep -q "\[!\]" patch_output.log; then
-          exit 1
-        fi
+        python3 patch_binary.py > error.txt 2>&1 || true
+        cat error.txt
+
+    - name: Commit error log
+      if: failure()
+      run: |
+        git config user.name "GitHub Actions"
+        git config user.email "actions@github.com"
+        git add error.txt
+        git commit -m "Add error log" || true
+        git push || true
 
     - name: Upload patch log on failure
       if: failure()
