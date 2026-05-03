@@ -166,10 +166,13 @@ for (seg, sect), (foff, vaddr, size) in sections.items():
 
 if classname_vaddr:
     classname_bytes = struct.pack("<Q", classname_vaddr)
+    print(f"[+] Looking for class_ro_t with classname ptr {classname_vaddr:#x}")
     for search_foff in range(0, len(data) - 48, 8):
         if data[search_foff+24:search_foff+32] == classname_bytes:
+            print(f"[+] Found potential class_ro_t at file offset {search_foff:#x}")
             # Found class_ro_t, check ivars
             ivars_ptr = read_u64(data, search_foff + 48)
+            print(f"[+] ivars_ptr: {ivars_ptr:#x}")
             if ivars_ptr:
                 # Find ivars section
                 for (seg, sect), (foff, vaddr, size) in sections.items():
