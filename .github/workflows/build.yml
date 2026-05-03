@@ -18,15 +18,10 @@ jobs:
 
     - name: Patch binary
       run: |
-        python3 patch_binary.py > patch.log 2>&1 || true
+        python3 patch_binary.py 2>&1 | tee patch.log
+        exit_code=${PIPESTATUS[0]}
         cat patch.log
-        if grep -q "\[!\]" patch.log; then
-          echo "## Patch Failed" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat patch.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          exit 1
-        fi
+        exit $exit_code
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
