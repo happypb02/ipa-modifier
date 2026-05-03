@@ -13,124 +13,96 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update -q
-        sudo apt-get install -y curl git unzip zip patchelf
-
-    - name: Install Theos + iOS toolchain
-      run: |
-        # 安装 Theos
-        git clone --recursive https://github.com/theos/theos.git $HOME/theos
-
-        # 下载 iOS SDK
-        curl -LO https://github.com/theos/sdks/releases/download/master/iPhoneOS16.5.sdk.tar.xz
-        tar -xf iPhoneOS16.5.sdk.tar.xz -C $HOME/theos/sdks/
-
-        # 下载 Linux 版 clang 交叉编译工具链
-        curl -LO https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma
-        mkdir -p $HOME/theos/toolchain/linux/iphone
-        tar -xf linux-ios-arm64e-clang-toolchain.tar.lzma --strip-components=1 -C $HOME/theos/toolchain/linux/iphone/
-
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
-
-    - name: Build Tweak
-      run: |
-        export THEOS=$HOME/theos
-        export THEOS_MAKE_PATH=$HOME/theos/makefiles
-        cd InstallRedirect
-        make clean 2>/dev/null || true
-        make FINALPACKAGE=1 2>&1
-        echo "--- obj dir ---"
-        find .theos -name "*.dylib" 2>/dev/null || echo "no dylib found"
-
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Copy dylib into app bundle
+    - name: Patch binary with Python
       run: |
-        DYLIB=$(find InstallRedirect/.theos -name "*.dylib" | head -1)
-        echo "Found dylib: $DYLIB"
-        cp "$DYLIB" temp/Payload/DumpApp.app/InstallRedirect.dylib
-
-    - name: Inject load command into binary
-      run: |
-        # 用 Python 直接在 Mach-O 里写入 LC_LOAD_DYLIB
         python3 << 'PYEOF'
-        import struct, sys, os
+        import struct, os, sys
 
         binary_path = "temp/Payload/DumpApp.app/DumpApp"
-        dylib_name  = "@executable_path/InstallRedirect.dylib"
 
         with open(binary_path, "rb") as f:
             data = bytearray(f.read())
 
-        # Mach-O magic numbers
-        MH_MAGIC_64   = 0xFEEDFACF
-        MH_CIGAM_64   = 0xCFFAEDFE
-        FAT_MAGIC     = 0xCAFEBABE
+        print(f"[*] Binary size: {len(data)} bytes")
 
-        def patch_macho(data, offset):
-            magic = struct.unpack_from("<I", data, offset)[0]
-            if magic == MH_CIGAM_64:
-                # little-endian arm64
-                ncmds  = struct.unpack_from("<I", data, offset + 16)[0]
-                cmdoff = offset + 32  # sizeof mach_header_64
-                for _ in range(ncmds):
-                    cmd, cmdsize = struct.unpack_from("<II", data, cmdoff)
-                    cmdoff += cmdsize
-
-                # Build LC_LOAD_DYLIB (cmd=0xC)
-                name_off = 24  # offset of name within load command
-                dylib_bytes = dylib_name.encode() + b"\x00"
-                # pad to 8-byte alignment
-                pad = (8 - (name_off + len(dylib_bytes)) % 8) % 8
-                dylib_bytes += b"\x00" * pad
-                lc_size = name_off + len(dylib_bytes)
-
-                lc  = struct.pack("<II", 0xC, lc_size)   # cmd, cmdsize
-                lc += struct.pack("<I", name_off)          # name offset
-                lc += struct.pack("<I", 0)                 # timestamp
-                lc += struct.pack("<II", 0x10000, 0x10000) # current/compat version
-                lc += dylib_bytes
-
-                # Append load command and update ncmds + sizeofcmds
-                insert_pos = cmdoff
-                data[insert_pos:insert_pos] = lc
-
-                # update ncmds
-                struct.pack_into("<I", data, offset + 16, ncmds + 1)
-                # update sizeofcmds
-                sizeofcmds = struct.unpack_from("<I", data, offset + 20)[0]
-                struct.pack_into("<I", data, offset + 20, sizeofcmds + lc_size)
-
-                print(f"[+] Injected LC_LOAD_DYLIB at offset {insert_pos:#x}, lc_size={lc_size}")
-            else:
-                print(f"[!] Skipping unknown magic {magic:#x} at offset {offset:#x}")
-
-        magic = struct.unpack_from(">I", data, 0)[0]
-        if magic == FAT_MAGIC:
-            narch = struct.unpack_from(">I", data, 4)[0]
-            for i in range(narch):
-                arch_off = 8 + i * 20
-                offset = struct.unpack_from(">I", data, arch_off + 8)[0]
-                print(f"[*] FAT slice {i} at offset {offset:#x}")
-                patch_macho(data, offset)
+        # 搜索 installClick 方法的实现
+        # 在 Mach-O __TEXT,__objc_methnames 段中找到方法名
+        target_method = b"installClick\x00"
+        pos = data.find(target_method)
+        if pos != -1:
+            print(f"[+] Found 'installClick' at offset {pos:#x}")
         else:
-            patch_macho(data, 0)
+            print("[!] 'installClick' not found")
 
-        with open(binary_path, "wb") as f:
-            f.write(data)
-        print("[+] Done")
+        # 搜索 DASignProcessVC 类名
+        target_class = b"DASignProcessVC\x00"
+        pos2 = data.find(target_class)
+        if pos2 != -1:
+            print(f"[+] Found 'DASignProcessVC' at offset {pos2:#x}")
+        else:
+            print("[!] 'DASignProcessVC' not found")
+
+        # 搜索 DASelectAppVC 类名
+        target_class2 = b"DASelectAppVC\x00"
+        pos3 = data.find(target_class2)
+        if pos3 != -1:
+            print(f"[+] Found 'DASelectAppVC' at offset {pos3:#x}")
+        else:
+            print("[!] 'DASelectAppVC' not found")
+
+        # 搜索所有包含 "install" 的方法名
+        print("\n[*] Methods containing 'install':")
+        search = b"install"
+        start = 0
+        while True:
+            p = data.find(search, start)
+            if p == -1:
+                break
+            # 找到字符串的开始（向前找 \x00）
+            s = p
+            while s > 0 and data[s-1] != 0:
+                s -= 1
+            # 找到字符串的结束
+            e = p
+            while e < len(data) and data[e] != 0:
+                e += 1
+            method = data[s:e].decode('utf-8', errors='ignore')
+            if method and len(method) < 100:
+                print(f"  offset {s:#x}: {method}")
+            start = e + 1
+
+        # 搜索所有包含 "Select" 的方法名
+        print("\n[*] Methods containing 'Select':")
+        search = b"Select"
+        start = 0
+        count = 0
+        while count < 20:
+            p = data.find(search, start)
+            if p == -1:
+                break
+            s = p
+            while s > 0 and data[s-1] != 0:
+                s -= 1
+            e = p
+            while e < len(data) and data[e] != 0:
+                e += 1
+            method = data[s:e].decode('utf-8', errors='ignore')
+            if method and len(method) < 100 and method.isprintable():
+                print(f"  offset {s:#x}: {method}")
+                count += 1
+            start = e + 1
+
+        print("\n[*] Analysis complete")
         PYEOF
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
 
     - name: Repackage IPA
-      run: |
-        cd temp
-        zip -qr ../2_modified.ipa Payload
+      run: cd temp && zip -qr ../2_modified.ipa Payload
 
     - name: Upload modified IPA
       uses: actions/upload-artifact@v4
