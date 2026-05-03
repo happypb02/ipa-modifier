@@ -16,86 +16,63 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Patch binary with Python
+    - name: Deep analysis of DASelectAppVC and DASignProcessVC
       run: |
         python3 << 'PYEOF'
-        import struct, os, sys
+        import struct, re
 
-        binary_path = "temp/Payload/DumpApp.app/DumpApp"
+        with open("temp/Payload/DumpApp.app/DumpApp", "rb") as f:
+            data = f.read()
 
-        with open(binary_path, "rb") as f:
-            data = bytearray(f.read())
+        def find_strings_containing(keyword):
+            results = []
+            kb = keyword.encode()
+            start = 0
+            while True:
+                p = data.find(kb, start)
+                if p == -1:
+                    break
+                s = p
+                while s > 0 and data[s-1] != 0:
+                    s -= 1
+                e = p
+                while e < len(data) and data[e] != 0:
+                    e += 1
+                method = data[s:e].decode('utf-8', errors='ignore')
+                if method and len(method) < 150:
+                    results.append((s, method))
+                start = e + 1
+            return results
 
-        print(f"[*] Binary size: {len(data)} bytes")
+        # DASelectAppVC 的所有方法
+        print("=== DASelectAppVC methods ===")
+        for off, m in find_strings_containing("DASelectAppVC"):
+            print(f"  {off:#x}: {m}")
 
-        # 搜索 installClick 方法的实现
-        # 在 Mach-O __TEXT,__objc_methnames 段中找到方法名
-        target_method = b"installClick\x00"
-        pos = data.find(target_method)
-        if pos != -1:
-            print(f"[+] Found 'installClick' at offset {pos:#x}")
-        else:
-            print("[!] 'installClick' not found")
+        # 找 segment / tab 相关方法
+        print("\n=== segment related ===")
+        for off, m in find_strings_containing("segment"):
+            if len(m) < 80:
+                print(f"  {off:#x}: {m}")
 
-        # 搜索 DASignProcessVC 类名
-        target_class = b"DASignProcessVC\x00"
-        pos2 = data.find(target_class)
-        if pos2 != -1:
-            print(f"[+] Found 'DASignProcessVC' at offset {pos2:#x}")
-        else:
-            print("[!] 'DASignProcessVC' not found")
+        # 找 signed / sign 相关方法
+        print("\n=== sign related methods ===")
+        for off, m in find_strings_containing("sign"):
+            if len(m) < 80 and not m.startswith("T@") and not m.startswith("_"):
+                print(f"  {off:#x}: {m}")
 
-        # 搜索 DASelectAppVC 类名
-        target_class2 = b"DASelectAppVC\x00"
-        pos3 = data.find(target_class2)
-        if pos3 != -1:
-            print(f"[+] Found 'DASelectAppVC' at offset {pos3:#x}")
-        else:
-            print("[!] 'DASelectAppVC' not found")
+        # 找 selectVC 属性
+        print("\n=== selectVC related ===")
+        for off, m in find_strings_containing("selectVC"):
+            print(f"  {off:#x}: {m}")
 
-        # 搜索所有包含 "install" 的方法名
-        print("\n[*] Methods containing 'install':")
-        search = b"install"
-        start = 0
-        while True:
-            p = data.find(search, start)
-            if p == -1:
-                break
-            # 找到字符串的开始（向前找 \x00）
-            s = p
-            while s > 0 and data[s-1] != 0:
-                s -= 1
-            # 找到字符串的结束
-            e = p
-            while e < len(data) and data[e] != 0:
-                e += 1
-            method = data[s:e].decode('utf-8', errors='ignore')
-            if method and len(method) < 100:
-                print(f"  offset {s:#x}: {method}")
-            start = e + 1
+        # 找 setSelect / switchTo / switchTab 相关
+        print("\n=== switch/tab methods ===")
+        for kw in ["setSelect", "switchTo", "switchTab", "showSigned", "signedList", "signList", "已定制", "customized"]:
+            for off, m in find_strings_containing(kw):
+                if len(m) < 100:
+                    print(f"  [{kw}] {off:#x}: {m}")
 
-        # 搜索所有包含 "Select" 的方法名
-        print("\n[*] Methods containing 'Select':")
-        search = b"Select"
-        start = 0
-        count = 0
-        while count < 20:
-            p = data.find(search, start)
-            if p == -1:
-                break
-            s = p
-            while s > 0 and data[s-1] != 0:
-                s -= 1
-            e = p
-            while e < len(data) and data[e] != 0:
-                e += 1
-            method = data[s:e].decode('utf-8', errors='ignore')
-            if method and len(method) < 100 and method.isprintable():
-                print(f"  offset {s:#x}: {method}")
-                count += 1
-            start = e + 1
-
-        print("\n[*] Analysis complete")
         PYEOF
 
     - name: Remove old signature
