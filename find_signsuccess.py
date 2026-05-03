@@ -123,4 +123,92 @@ for search_foff in range(0, len(data) - 48, 8):
             break
 
 if not ss_imp_vaddr:
-    print("[!] signSuccess not found in DASelectAppVC")
+    print("[!] signSuccess not found in DASelectAppVC methods")
+    print("[*] Searching for signSuccess by selref references...")
+
+    # Find signSuccess selref
+    ss_off = methnames_data.find(b'signSuccess\x00')
+    if ss_off < 0:
+        print("[!] signSuccess selector string not found")
+        sys.exit(1)
+
+    ss_str_vaddr = mn_vaddr + ss_off
+    print(f"[+] signSuccess selector string at: {ss_str_vaddr:#x}")
+
+    # Find selref
+    selrefs_key = ('__DATA', '__objc_selrefs')
+    if selrefs_key not in sections:
+        selrefs_key = ('__DATA_CONST', '__objc_selrefs')
+    sr_foff, sr_vaddr, sr_size = sections[selrefs_key]
+
+    ss_selref_vaddr = None
+    for i in range(0, sr_size, 8):
+        ptr = read_u64(data, sr_foff + i)
+        if ptr == ss_str_vaddr:
+            ss_selref_vaddr = sr_vaddr + i
+            break
+
+    if not ss_selref_vaddr:
+        print("[!] signSuccess selref not found")
+        sys.exit(1)
+
+    print(f"[+] signSuccess selref at: {ss_selref_vaddr:#x}")
+
+    # Search for references in code
+    text_foff, text_vaddr, text_size = sections[('__TEXT', '__text')]
+    print(f"[+] Searching in __TEXT::__text...")
+
+    found_refs = []
+    for i in range(0, text_size - 8, 4):
+        insn1 = read_u32(data, text_foff + i)
+        insn2 = read_u32(data, text_foff + i + 4)
+
+        if (insn1 & 0x9F000000) == 0x90000000:
+            rd = insn1 & 0x1F
+            immlo = (insn1 >> 29) & 0x3
+            immhi = (insn1 >> 5) & 0x7FFFF
+            imm = ((immhi << 2) | immlo) << 12
+            if imm & (1 << 32):
+                imm -= (1 << 33)
+
+            pc = text_vaddr + i
+            target_page = (pc & ~0xFFF) + imm
+
+            if (insn2 & 0x1F) == rd or ((insn2 >> 5) & 0x1F) == rd:
+                if (insn2 & 0xFFC00000) == 0x91000000:
+                    add_imm = (insn2 >> 10) & 0xFFF
+                    target = target_page + add_imm
+                elif (insn2 & 0xFFC00000) == 0xF9400000:
+                    ldr_imm = ((insn2 >> 10) & 0xFFF) * 8
+                    target = target_page + ldr_imm
+                else:
+                    continue
+
+                if target == ss_selref_vaddr:
+                    func_addr = text_vaddr + i
+                    found_refs.append(func_addr)
+
+    print(f"[+] Found {len(found_refs)} references to signSuccess selref")
+    for ref in found_refs[:5]:  # Show first 5
+        print(f"  - {ref:#x}")
+
+    if found_refs:
+        # Use first reference and find function start
+        ref_addr = found_refs[0]
+        search_start = ref_addr - text_vaddr
+
+        for i in range(search_start, max(0, search_start - 2048), -4):
+            insn = read_u32(data, text_foff + i)
+            if (insn & 0xFFC00000) == 0xA9800000:
+                ss_imp_vaddr = text_vaddr + i
+                ss_imp_foff = text_foff + i
+                print(f"\n[+] signSuccess function starts at: {ss_imp_vaddr:#x}")
+
+                # Dump first 64 instructions
+                print("\n[*] First 64 instructions:")
+                for j in range(0, 256, 4):
+                    insn = read_u32(data, ss_imp_foff + j)
+                    addr = ss_imp_vaddr + j
+                    marker = " <-- ref" if addr == ref_addr else ""
+                    print(f"  {addr:#x}: {insn:08x}{marker}")
+                break
