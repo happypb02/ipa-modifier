@@ -594,6 +594,38 @@ jobs:
                         while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
                         print(f"[+] class_ro_t at {q:#x} => class name: {name.decode(errors='replace')}")
                     break
+        # ── Extra: resolve class name and GOT selectors ──────────────────────
+        # class_ro_t at file 0xd9c988, name* at offset 24 = file 0xd9c9a0
+        name_ptr_foff = 0xd9c988 + 24
+        name_ptr = read_u64(data, name_ptr_foff)
+        print(f"[*] class_ro_t name_ptr = {name_ptr:#x}")
+        nf = vm_to_file(sections, name_ptr)
+        if nf:
+            name = b''
+            j = nf
+            while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
+            print(f"[+] class name = {name.decode(errors='replace')}")
+        else:
+            print(f"[!] name_ptr not in any section")
+
+        # Resolve GOT entries for the two unresolved stubs
+        for got_va in [0x100ccafd0, 0x100ccafa8]:
+            gf = vm_to_file(sections, got_va)
+            if gf:
+                ptr = read_u64(data, gf)
+                print(f"[*] GOT {got_va:#x} -> {ptr:#x}")
+                if ptr in selref_to_name:
+                    print(f"    => selector: {selref_to_name[ptr]}")
+                elif mn_vaddr <= ptr < mn_vaddr + mn_size:
+                    sf2 = mn_foff + (ptr - mn_vaddr)
+                    name = b''
+                    j = sf2
+                    while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
+                    print(f"    => string: {name.decode(errors='replace')}")
+                else:
+                    print(f"    => unknown ptr")
+            else:
+                print(f"[!] GOT {got_va:#x} not in sections")
         PYEOF
 
     - name: Remove old signature
