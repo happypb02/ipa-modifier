@@ -251,8 +251,8 @@ patch += adr_imm(1, base+28, litpool_va+8)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += bl_insn(base+36, objc_msgSend_vaddr)
 
-# [tabBar setSelectedIndex:1]
-patch += bytes([0xd2, 0x80, 0x00, 0x02])   # MOV X2,#1
+# [tabBar setSelectedIndex:2]
+patch += bytes([0xd2, 0x80, 0x00, 0x42])   # MOV X2,#2
 patch += adr_imm(1, base+44, litpool_va+16)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += bl_insn(base+52, objc_msgSend_vaddr)
