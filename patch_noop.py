@@ -167,60 +167,13 @@ if installclick_imp_foff is None:
 
 print(f"[+] installClick IMP file offset: {installclick_imp_foff:#x}")
 
-# Try to find selectVC getter method
-print("\n[*] Looking for selectVC getter...")
-sv_off = methnames_data.find(b'selectVC\x00')
-if sv_off >= 0:
-    sv_str_vaddr = mn_vaddr + sv_off
-    print(f"[+] selectVC selector string at: {sv_str_vaddr:#x}")
+# Read the first 64 bytes of installClick to analyze
+print("\n[*] First 64 bytes of installClick:")
+code_bytes = data[installclick_imp_foff:installclick_imp_foff+64]
+for i in range(0, min(64, len(code_bytes)), 4):
+    insn = struct.unpack("<I", code_bytes[i:i+4])[0]
+    print(f"  {installclick_imp_vaddr+i:#x}: {insn:08x}")
 
-    # Find selectVC selref
-    sv_selref_vaddr = None
-    for i in range(0, sr_size, 8):
-        ptr = read_u64(data, sr_foff + i)
-        if ptr == sv_str_vaddr:
-            sv_selref_vaddr = sr_vaddr + i
-            print(f"[+] selectVC selref at: {sv_selref_vaddr:#x}")
-            break
-
-    if not sv_selref_vaddr:
-        print("[!] selectVC selref not found - property might use direct ivar access")
-
-        # Try to find the getter by looking at DASignProcessVC methods
-        for search_foff in range(0, len(data) - 48, 8):
-            if data[search_foff+24:search_foff+32] == classname_bytes:
-                base_methods_vm = read_u64(data, search_foff + 32)
-                if base_methods_vm:
-                    for (seg, sect), (foff, vaddr, size) in sections.items():
-                        if vaddr <= base_methods_vm < vaddr + size:
-                            methods_foff = foff + (base_methods_vm - vaddr)
-                            entsize = read_u32(data, methods_foff) & 0xFFFF
-                            count = read_u32(data, methods_foff + 4)
-
-                            print(f"[+] DASignProcessVC has {count} methods")
-                            for i in range(count):
-                                method_base = methods_foff + 8 + i * entsize
-                                sel_vm = read_u64(data, method_base)
-                                imp_vm = read_u64(data, method_base + 8)
-
-                                # Find selector name
-                                for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
-                                    if vaddr2 <= sel_vm < vaddr2 + size2:
-                                        sel_foff = foff2 + (sel_vm - vaddr2)
-                                        sel_end = data.find(b'\x00', sel_foff)
-                                        sel_name = data[sel_foff:sel_end].decode('utf-8', errors='ignore')
-                                        if 'select' in sel_name.lower():
-                                            print(f"  - {sel_name}: IMP at {imp_vm:#x}")
-                                        break
-                            break
-                break
-
-# Patch: just RET
-patch = bytes([0xC0, 0x03, 0x5F, 0xD6])  # RET
-data[installclick_imp_foff:installclick_imp_foff + 4] = patch
-
-with open(binary_path, "wb") as f:
-    f.write(data)
-
-print("[+] Patched installClick to RET (no-op)")
-print("[+] Binary patched successfully")
+# Don't patch yet - let's analyze first
+print("\n[!] Skipping patch - need to analyze code first")
+sys.exit(0)
