@@ -16,19 +16,8 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Compile hook dylib
-      run: |
-        clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) \
-          -miphoneos-version-min=12.0 \
-          -framework Foundation -framework UIKit \
-          -dynamiclib -o libhook.dylib hook.m \
-          -Wl,-install_name,@executable_path/Frameworks/libhook.dylib
-
-    - name: Inject dylib
-      run: |
-        mkdir -p temp/Payload/DumpApp.app/Frameworks
-        cp libhook.dylib temp/Payload/DumpApp.app/Frameworks/
-        python3 inject_dylib.py temp/Payload/DumpApp.app/DumpApp "@executable_path/Frameworks/libhook.dylib"
+    - name: Patch binary
+      run: python3 patch_noop.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
