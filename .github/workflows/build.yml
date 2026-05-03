@@ -629,9 +629,11 @@ jobs:
 
         # ── Check DASignProcessVC's actual ivar list ──────────────────────────
         # DASignProcessVC class_ro_t is at file 0xdd6188
-        # ivars* is at offset 40 = file 0xdd61b0
+        # class_ro_t layout: flags(4),instanceStart(4),instanceSize(4),reserved(4),
+        #   ivarLayout*(8), name*(8), baseMethods*(8), baseProtocols*(8), ivars*(8)
+        # ivars* is at offset 48 = file 0xdd6188+48 = 0xdd61b8
         da_cro_foff = 0xdd6188
-        ivars_ptr = read_u64(data, da_cro_foff + 40)
+        ivars_ptr = read_u64(data, da_cro_foff + 48)
         print(f"[*] DASignProcessVC class_ro_t ivars* = {ivars_ptr:#x}")
         if ivars_ptr:
             il_f = vm_to_file(sections, ivars_ptr)
