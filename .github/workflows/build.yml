@@ -162,6 +162,12 @@ jobs:
         if not all([ic_selref_vaddr, ss_selref_vaddr]):
             print("[!] Missing required selrefs"); sys.exit(1)
 
+        # Resolve __objc_const early (needed for both ivar search and IMP search)
+        const_key = ('__DATA', '__objc_const')
+        if const_key not in sections:
+            const_key = ('__DATA_CONST', '__objc_const')
+        oc_foff, oc_vaddr, oc_size = sections[const_key]
+
         # Find _selectVC ivar offset (compiler uses direct ivar access, not objc_msgSend)
         # ivar_t: offset_ptr(8), name_ptr(8), type_ptr(8), align(4), size(4) = 32 bytes
         selectvc_ivar_offset = None
@@ -200,11 +206,6 @@ jobs:
             print("[!] selectVC ivar offset not found"); sys.exit(1)
 
         # Find installClick IMP (try absolute method list first, then relative)
-        const_key = ('__DATA', '__objc_const')
-        if const_key not in sections:
-            const_key = ('__DATA_CONST', '__objc_const')
-        oc_foff, oc_vaddr, oc_size = sections[const_key]
-
         installclick_imp_vaddr = None
 
         # Absolute method list: name field = 8-byte pointer to selref
