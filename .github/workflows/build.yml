@@ -7,53 +7,125 @@ on:
 
 jobs:
   build:
-    runs-on: macos-13
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup environment
+    - name: Install dependencies
       run: |
-        brew install ldid
-        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+        sudo apt-get update -q
+        sudo apt-get install -y curl git unzip zip patchelf
 
-    - name: Install Theos
+    - name: Install Theos + iOS toolchain
       run: |
+        # 安装 Theos
         git clone --recursive https://github.com/theos/theos.git $HOME/theos
 
-    - name: Install insert_dylib
-      run: |
-        git clone https://github.com/Tyilo/insert_dylib
-        cd insert_dylib
-        xcodebuild -configuration Release
-        sudo cp build/Release/insert_dylib /usr/local/bin/
-        insert_dylib --version || echo "insert_dylib installed"
+        # 下载 iOS SDK
+        curl -LO https://github.com/theos/sdks/releases/download/master/iPhoneOS16.5.sdk.tar.xz
+        tar -xf iPhoneOS16.5.sdk.tar.xz -C $HOME/theos/sdks/
+
+        # 下载 Linux 版 clang 交叉编译工具链
+        curl -LO https://github.com/sbingner/llvm-project/releases/download/v10.0.0-1/linux-ios-arm64e-clang-toolchain.tar.lzma
+        mkdir -p $HOME/theos/toolchain/linux/iphone
+        tar -xf linux-ios-arm64e-clang-toolchain.tar.lzma --strip-components=1 -C $HOME/theos/toolchain/linux/iphone/
+
+        echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
     - name: Build Tweak
       run: |
-        cd InstallRedirect
         export THEOS=$HOME/theos
-        make clean || true
-        make FINALPACKAGE=1
+        export THEOS_MAKE_PATH=$HOME/theos/makefiles
+        cd InstallRedirect
+        make clean 2>/dev/null || true
+        make FINALPACKAGE=1 2>&1
+        echo "--- obj dir ---"
+        find .theos -name "*.dylib" 2>/dev/null || echo "no dylib found"
 
     - name: Extract IPA
-      run: |
-        unzip -q 2.ipa -d temp
+      run: unzip -q 2.ipa -d temp
 
-    - name: Copy dylib to app
+    - name: Copy dylib into app bundle
       run: |
-        ls -la InstallRedirect/.theos/obj/
-        cp InstallRedirect/.theos/obj/InstallRedirect.dylib temp/Payload/DumpApp.app/ || \
-        cp InstallRedirect/.theos/obj/debug/InstallRedirect.dylib temp/Payload/DumpApp.app/
+        DYLIB=$(find InstallRedirect/.theos -name "*.dylib" | head -1)
+        echo "Found dylib: $DYLIB"
+        cp "$DYLIB" temp/Payload/DumpApp.app/InstallRedirect.dylib
 
-    - name: Inject dylib
+    - name: Inject load command into binary
       run: |
-        insert_dylib @executable_path/InstallRedirect.dylib temp/Payload/DumpApp.app/DumpApp temp/Payload/DumpApp.app/DumpApp --all-yes
+        # 用 Python 直接在 Mach-O 里写入 LC_LOAD_DYLIB
+        python3 << 'PYEOF'
+        import struct, sys, os
+
+        binary_path = "temp/Payload/DumpApp.app/DumpApp"
+        dylib_name  = "@executable_path/InstallRedirect.dylib"
+
+        with open(binary_path, "rb") as f:
+            data = bytearray(f.read())
+
+        # Mach-O magic numbers
+        MH_MAGIC_64   = 0xFEEDFACF
+        MH_CIGAM_64   = 0xCFFAEDFE
+        FAT_MAGIC     = 0xCAFEBABE
+
+        def patch_macho(data, offset):
+            magic = struct.unpack_from("<I", data, offset)[0]
+            if magic == MH_CIGAM_64:
+                # little-endian arm64
+                ncmds  = struct.unpack_from("<I", data, offset + 16)[0]
+                cmdoff = offset + 32  # sizeof mach_header_64
+                for _ in range(ncmds):
+                    cmd, cmdsize = struct.unpack_from("<II", data, cmdoff)
+                    cmdoff += cmdsize
+
+                # Build LC_LOAD_DYLIB (cmd=0xC)
+                name_off = 24  # offset of name within load command
+                dylib_bytes = dylib_name.encode() + b"\x00"
+                # pad to 8-byte alignment
+                pad = (8 - (name_off + len(dylib_bytes)) % 8) % 8
+                dylib_bytes += b"\x00" * pad
+                lc_size = name_off + len(dylib_bytes)
+
+                lc  = struct.pack("<II", 0xC, lc_size)   # cmd, cmdsize
+                lc += struct.pack("<I", name_off)          # name offset
+                lc += struct.pack("<I", 0)                 # timestamp
+                lc += struct.pack("<II", 0x10000, 0x10000) # current/compat version
+                lc += dylib_bytes
+
+                # Append load command and update ncmds + sizeofcmds
+                insert_pos = cmdoff
+                data[insert_pos:insert_pos] = lc
+
+                # update ncmds
+                struct.pack_into("<I", data, offset + 16, ncmds + 1)
+                # update sizeofcmds
+                sizeofcmds = struct.unpack_from("<I", data, offset + 20)[0]
+                struct.pack_into("<I", data, offset + 20, sizeofcmds + lc_size)
+
+                print(f"[+] Injected LC_LOAD_DYLIB at offset {insert_pos:#x}, lc_size={lc_size}")
+            else:
+                print(f"[!] Skipping unknown magic {magic:#x} at offset {offset:#x}")
+
+        magic = struct.unpack_from(">I", data, 0)[0]
+        if magic == FAT_MAGIC:
+            narch = struct.unpack_from(">I", data, 4)[0]
+            for i in range(narch):
+                arch_off = 8 + i * 20
+                offset = struct.unpack_from(">I", data, arch_off + 8)[0]
+                print(f"[*] FAT slice {i} at offset {offset:#x}")
+                patch_macho(data, offset)
+        else:
+            patch_macho(data, 0)
+
+        with open(binary_path, "wb") as f:
+            f.write(data)
+        print("[+] Done")
+        PYEOF
 
     - name: Remove old signature
-      run: |
-        rm -rf temp/Payload/DumpApp.app/_CodeSignature
+      run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
 
     - name: Repackage IPA
       run: |
