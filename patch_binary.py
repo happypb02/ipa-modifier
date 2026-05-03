@@ -137,15 +137,19 @@ sr_foff, sr_vaddr, sr_size = sections[selrefs_key]
 sv_off = methnames_data.find(b'selectVC\x00')
 if sv_off >= 0:
     sv_str_vaddr = mn_vaddr + sv_off
+    print(f"[+] selectVC string at: {sv_str_vaddr:#x}")
 else:
     sv_str_vaddr = None
+    print("[!] selectVC string not found in __objc_methname")
 
 ic_selref_vaddr = ss_selref_vaddr = sv_selref_vaddr = None
 for i in range(0, sr_size, 8):
     ptr = read_u64(data, sr_foff + i)
     if ptr == ic_str_vaddr: ic_selref_vaddr = sr_vaddr + i
     if ptr == ss_str_vaddr: ss_selref_vaddr = sr_vaddr + i
-    if sv_str_vaddr and ptr == sv_str_vaddr: sv_selref_vaddr = sr_vaddr + i
+    if sv_str_vaddr and ptr == sv_str_vaddr:
+        sv_selref_vaddr = sr_vaddr + i
+        print(f"[+] Found selectVC selref at: {sv_selref_vaddr:#x}")
 
 print("[+] installClick selref: {0:#x}".format(ic_selref_vaddr) if ic_selref_vaddr else "[!] installClick selref not found")
 print("[+] signSuccess  selref: {0:#x}".format(ss_selref_vaddr) if ss_selref_vaddr else "[!] signSuccess selref not found")
