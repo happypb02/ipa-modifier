@@ -287,6 +287,7 @@ jobs:
         base = installclick_imp_vaddr
         litpool_off = 36
 
+        patch = bytearray()
         def pc(): return base + len(patch)
 
         patch += bytes([0xfd, 0x7d, 0xbf, 0xa9])  # STP X29,X30,[SP,#-16]!
