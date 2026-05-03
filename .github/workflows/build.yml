@@ -685,6 +685,64 @@ jobs:
                 if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF
                 tgt = (ic_imp_vaddr + i*4 + imm26*4) & 0xFFFFFFFFFFFFFFFF
                 print(f"  [{i:3d}] BL {tgt:#x}")
+
+        # ── Find selectVC selref by scanning ALL occurrences ─────────────────
+        # The methnames section may have 'selectVC\x00' at multiple positions
+        # We need to find ALL of them and check which one has a selref
+        sv_name = b'selectVC\x00'
+        pos = 0
+        while True:
+            off = data[mn_foff:mn_foff+mn_size].find(sv_name, pos)
+            if off < 0: break
+            sv_va = mn_vaddr + off
+            # Check if this exact address is pointed to by any selref
+            sv_bytes = struct.pack("<Q", sv_va)
+            found = False
+            for i in range(0, sr_size, 8):
+                if data[sr_foff+i:sr_foff+i+8] == sv_bytes:
+                    print(f"[+] selectVC selref at {sr_vaddr+i:#x} -> str {sv_va:#x} (methname off {off:#x})")
+                    found = True
+            if not found:
+                print(f"[*] selectVC str at {sv_va:#x} (off {off:#x}) - no selref")
+            pos = off + 1
+
+        # ── Find selectVC getter IMP in DASignProcessVC ───────────────────────
+        # Search for 'selectVC\x00' in methnames, then find method in DASignProcessVC
+        sv_str_off2 = data[mn_foff:mn_foff+mn_size].find(b'selectVC\x00')
+        if sv_str_off2 >= 0:
+            sv_str_va2 = mn_vaddr + sv_str_off2
+            da_cro2_foff = 0xdd6188
+            bm_vm2 = read_u64(data, da_cro2_foff + 32)
+            if bm_vm2:
+                ml2_f = vm_to_file(sections, bm_vm2)
+                if ml2_f:
+                    ml2_flags = read_u32(data, ml2_f)
+                    ml2_count = read_u32(data, ml2_f + 4)
+                    is_rel2 = bool(ml2_flags & 0x80000000)
+                    msz2 = 12 if is_rel2 else 24
+                    print(f"[*] DASignProcessVC methods: flags={ml2_flags:#x} count={ml2_count} rel={is_rel2}")
+                    for i in range(ml2_count):
+                        mf2 = ml2_f + 8 + i * msz2
+                        mv2 = bm_vm2 + 8 + i * msz2
+                        if is_rel2:
+                            n_off2 = read_i32(data, mf2)
+                            nt2 = (mv2 + n_off2) & 0xFFFFFFFFFFFFFFFF
+                            nf2 = vm_to_file(sections, nt2)
+                            name_match2 = (nt2 == sv_str_va2) or (nf2 and read_u64(data, nf2) == sv_str_va2)
+                        else:
+                            name_match2 = (read_u64(data, mf2) == sv_str_va2)
+                        if name_match2:
+                            if is_rel2:
+                                i_off2 = read_i32(data, mf2 + 8)
+                                imp2 = (mv2 + 8 + i_off2) & 0xFFFFFFFFFFFFFFFF
+                            else:
+                                imp2 = read_u64(data, mf2 + 16)
+                            print(f"[+] selectVC getter IMP in DASignProcessVC: {imp2:#x}")
+                            imp2_f = vm_to_file(sections, imp2)
+                            if imp2_f:
+                                for j in range(8):
+                                    print(f"  [{j}] {read_u32(data, imp2_f+j*4):#010x}")
+                            break
         PYEOF
 
     - name: Remove old signature
