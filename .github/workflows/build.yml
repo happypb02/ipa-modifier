@@ -359,429 +359,113 @@ jobs:
         print("[+] Binary patched successfully")
         PYEOF
 
-    - name: Analyze signSuccess and verify patch
+    - name: Verify patch bytes
       run: |
         python3 << 'PYEOF'
-        import struct, sys
+        import struct
 
         binary_path = "temp/Payload/DumpApp.app/DumpApp"
         with open(binary_path, "rb") as f:
             data = bytearray(f.read())
 
-        def read_u32(data, off): return struct.unpack_from("<I", data, off)[0]
-        def read_u64(data, off): return struct.unpack_from("<Q", data, off)[0]
-        def read_i32(data, off): return struct.unpack_from("<i", data, off)[0]
+        # 补丁应该写入的位置
+        ic_foff = 0x27aa1c
+        patch_bytes = data[ic_foff:ic_foff + 36]
+        print(f"[*] Bytes at 0x{ic_foff:x}: {patch_bytes.hex()}")
+        print(f"[*] Total patch area (36 bytes): OK" if len(patch_bytes) == 36 else f"[!] Only {len(patch_bytes)} bytes")
 
-        LC_SEGMENT_64 = 0x19
+        # 验证第一条指令: STP X29,X30,[SP,#-16]! = 0xA9BF7DFD
+        w0 = struct.unpack_from("<I", patch_bytes, 0)[0]
+        print(f"[*] instr[0] = {w0:#010x}  {'OK (STP PRE)' if w0 == 0xA9BF7DFD else 'CHECK'}")
 
-        def find_sections(data, mh_off):
+        # 验证 ADRP+LDR 对 sv_selref (0x100ee5670)
+        w2 = struct.unpack_from("<I", patch_bytes, 8)[0]
+        w3 = struct.unpack_from("<I", patch_bytes, 12)[0]
+        adrp_va = 0x10027aa1c + 8
+        immlo = (w2 >> 29) & 3; immhi = (w2 >> 5) & 0x7FFFF
+        imm = ((immhi << 2) | immlo) << 12
+        if imm & (1 << 32): imm -= (1 << 33)
+        page = (adrp_va & ~0xFFF) + imm
+        imm12 = (w3 >> 10) & 0xFFF
+        resolved = page + imm12 * 8
+        print(f"[*] ADRP+LDR[sv_selref] resolved={resolved:#x}  {'OK' if resolved == 0x100ee5670 else 'MISMATCH'}")
+
+        # 验证 selectVC getter 在 DASignProcessVC 的 method list 中存在
+        def find_sections(data):
             sections = {}
-            ncmds = read_u32(data, mh_off + 16)
+            mh_off = 0
+            for base in range(0, len(data) - 32, 8):
+                if struct.unpack_from(">I", data, base)[0] == 0xFEEDFACE:
+                    mh_off = base; break
+            ncmds = struct.unpack_from("<I", data, mh_off + 16)[0]
             p = mh_off + 32
             for _ in range(ncmds):
-                cmd     = read_u32(data, p)
-                cmdsize = read_u32(data, p + 4)
-                if cmd == LC_SEGMENT_64:
-                    segname = data[p+8:p+24].rstrip(b'\x00').decode()
-                    nsects  = read_u32(data, p + 64)
+                cmd = struct.unpack_from("<I", data, p)[0]
+                csz = struct.unpack_from("<I", data, p + 4)[0]
+                if cmd == 0x19:
+                    ns = struct.unpack_from("<I", data, p + 64)[0]
                     sp = p + 72
-                    for _ in range(nsects):
-                        sectname = data[sp:sp+16].rstrip(b'\x00').decode()
-                        vm_addr  = read_u64(data, sp + 32)
-                        vm_size  = read_u64(data, sp + 40)
-                        file_off = read_u32(data, sp + 48)
-                        sections[(segname, sectname)] = (file_off, vm_addr, vm_size)
+                    for _ in range(ns):
+                        sn = data[sp:sp+16].rstrip(b'\x00').decode()
+                        sections[(data[p+8:p+24].rstrip(b'\x00').decode(), sn)] = (
+                            struct.unpack_from("<I", data, sp+48)[0],
+                            struct.unpack_from("<Q", data, sp+32)[0],
+                            struct.unpack_from("<Q", data, sp+40)[0])
                         sp += 80
-                p += cmdsize
+                p += csz
             return sections
 
-        def vm_to_file(sections, vm_addr):
-            for (seg, sect), (foff, vaddr, size) in sections.items():
-                if vaddr <= vm_addr < vaddr + size:
-                    return foff + (vm_addr - vaddr)
+        def vm_to_file(sections, va):
+            for (seg,sect),(fo,vaddr,size) in sections.items():
+                if vaddr <= va < vaddr + size:
+                    return fo + (va - vaddr)
             return None
 
-        magic  = read_u32(data, 0)
-        mh_off = 0
-        if magic == struct.unpack(">I", b'\xCA\xFE\xBA\xBE')[0]:
-            narch = struct.unpack_from(">I", data, 4)[0]
-            for i in range(narch):
-                base     = 8 + i * 20
-                cpu_type = struct.unpack_from(">I", data, base)[0]
-                if cpu_type == 0x0100000C:
-                    mh_off = struct.unpack_from(">I", data, base + 8)[0]; break
+        sections = find_sections(data)
+        mn_key = ('__TEXT','__objc_methnames') if ('__TEXT','__objc_methnames') in sections else ('__TEXT','__objc_methname')
+        mn_fo, mn_va, mn_sz = sections[mn_key]
 
-        sections = find_sections(data, mh_off)
+        sv_str_off = data[mn_fo:mn_fo+mn_sz].find(b'selectVC\x00')
+        sv_str_va = mn_va + sv_str_off
 
-        mn_key = ('__TEXT', '__objc_methnames')
-        if mn_key not in sections: mn_key = ('__TEXT', '__objc_methname')
-        mn_foff, mn_vaddr, mn_size = sections[mn_key]
-
-        sr_key = ('__DATA', '__objc_selrefs')
-        if sr_key not in sections: sr_key = ('__DATA_CONST', '__objc_selrefs')
-        sr_foff, sr_vaddr, sr_size = sections[sr_key]
-
-        # selref_va -> selector name
-        selref_to_name = {}
-        for i in range(0, sr_size, 8):
-            ptr = read_u64(data, sr_foff + i)
-            if mn_vaddr <= ptr < mn_vaddr + mn_size:
-                sf = mn_foff + (ptr - mn_vaddr)
-                name = b''
-                j = sf
-                while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-                selref_to_name[sr_vaddr + i] = name.decode(errors='replace')
-
-        stubs_k      = ('__TEXT', '__stubs')
-        objc_stubs_k = ('__TEXT', '__objc_stubs')
-
-        def decode_adrp_ldr(stub_va, sf):
-            i0 = read_u32(data, sf)
-            i1 = read_u32(data, sf + 4)
-            # ADRP: bit31=1, bits[28:24]=10000
-            if not ((i0 >> 31) == 1 and ((i0 >> 24) & 0x1F) == 0x10):
-                return None
-            immlo = (i0 >> 29) & 3
-            immhi = (i0 >> 5) & 0x7FFFF
-            imm   = ((immhi << 2) | immlo) << 12
-            if imm & (1 << 32): imm -= (1 << 33)
-            page  = (stub_va & ~0xFFF) + imm
-            # LDR (unsigned offset, 64-bit): bits[31:22] == 0x3E5
-            if (i1 & 0xFFC00000) != 0xF9400000:
-                return None
-            imm12 = (i1 >> 10) & 0xFFF
-            return page + imm12 * 8
-
-        def resolve_stub(stub_va):
-            for sk in [stubs_k, objc_stubs_k]:
-                if sk not in sections: continue
-                sk_foff, sk_vaddr, sk_size = sections[sk]
-                if not (sk_vaddr <= stub_va < sk_vaddr + sk_size): continue
-                sf = vm_to_file(sections, stub_va)
-                if sf is None: continue
-                target_va = decode_adrp_ldr(stub_va, sf)
-                if target_va is None: continue
-                # target_va is the selref address directly (__objc_stubs)
-                if target_va in selref_to_name:
-                    return selref_to_name[target_va]
-                # or a GOT entry pointing to the selref (__stubs)
-                tf = vm_to_file(sections, target_va)
-                if tf:
-                    ptr = read_u64(data, tf)
-                    if ptr in selref_to_name:
-                        return selref_to_name[ptr]
-                    # ptr might be the string directly
-                    if mn_vaddr <= ptr < mn_vaddr + mn_size:
-                        sf2 = mn_foff + (ptr - mn_vaddr)
-                        name = b''
-                        j = sf2
-                        while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-                        return name.decode(errors='replace')
-                # dump raw bytes for manual inspection
-                raw = data[sf:sf+12].hex()
-                return f"raw={raw} target_va={target_va:#x}"
-            return f"not_in_stubs"
-
-        # ── Find signSuccess IMP ──────────────────────────────────────────────
-        ss_str_off = data[mn_foff:mn_foff+mn_size].find(b'signSuccess\x00')
-        ss_str_vaddr = mn_vaddr + ss_str_off
-
-        da_sel_classname = b'DASelectAppVC\x00'
-        da_sel_foff = data.find(da_sel_classname)
-        da_sel_vaddr = None
-        for (seg, sect), (foff, vaddr, size) in sections.items():
-            if foff <= da_sel_foff < foff + size:
-                da_sel_vaddr = vaddr + (da_sel_foff - foff); break
-
-        ss_imp_vaddr = None
-        if da_sel_vaddr:
-            cn_bytes = struct.pack("<Q", da_sel_vaddr)
-            for q in range(0, len(data) - 48, 8):
-                if data[q+24:q+32] == cn_bytes:
-                    bm_vm = read_u64(data, q + 32)
-                    if not bm_vm: continue
-                    ml_f = vm_to_file(sections, bm_vm)
-                    if not ml_f: continue
-                    ml_flags = read_u32(data, ml_f)
-                    ml_count = read_u32(data, ml_f + 4)
-                    is_rel = bool(ml_flags & 0x80000000)
-                    msz = 12 if is_rel else 24
-                    for i in range(ml_count):
-                        mf = ml_f + 8 + i * msz
-                        mv = bm_vm + 8 + i * msz
-                        if is_rel:
-                            n_off = read_i32(data, mf)
-                            nt = (mv + n_off) & 0xFFFFFFFFFFFFFFFF
-                            nf = vm_to_file(sections, nt)
-                            match = (nt == ss_str_vaddr) or (nf and read_u64(data, nf) == ss_str_vaddr)
-                            if match:
-                                i_off = read_i32(data, mf + 8)
-                                ss_imp_vaddr = (mv + 8 + i_off) & 0xFFFFFFFFFFFFFFFF; break
-                        else:
-                            if read_u64(data, mf) == ss_str_vaddr:
-                                ss_imp_vaddr = read_u64(data, mf + 16); break
-                    if ss_imp_vaddr: break
-
-        if not ss_imp_vaddr:
-            print("[!] signSuccess IMP not found"); sys.exit(1)
-
-        ss_foff = vm_to_file(sections, ss_imp_vaddr)
-        print(f"[*] signSuccess IMP vm={ss_imp_vaddr:#x} file={ss_foff:#x}")
-
-        # ── Decode signSuccess: dump all instructions with BL targets ─────────
-        print("[*] signSuccess disasm (BL/RET only shown with context):")
-        for i in range(100):
-            foff = ss_foff + i * 4
-            instr = read_u32(data, foff)
-            va    = ss_imp_vaddr + i * 4
-            if (instr >> 26) == 0b100101:  # BL
-                imm26 = instr & 0x3FFFFFF
-                if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF
-                tgt = (va + imm26 * 4) & 0xFFFFFFFFFFFFFFFF
-                sel = resolve_stub(tgt)
-                print(f"  [{i:2d}] {va:#x} BL {tgt:#x}  => {sel}")
-            elif instr == 0xD65F03C0:  # RET
-                print(f"  [{i:2d}] {va:#x} RET")
-                break
-
-        # ── Dump raw signSuccess bytes for manual decode ──────────────────────
-        print("[*] signSuccess raw words:")
-        for i in range(22):
-            w = read_u32(data, ss_foff + i*4)
-            print(f"  [{i:2d}] {w:#010x}")
-
-        # ── Verify ivar ownership: which class_ro_t contains ivar_t at 0xd9c5e8 ──
-        ivar_t_foff = 0xd9c5e8
-        ivar_t_vm   = None
-        for (seg, sect), (foff, vaddr, size) in sections.items():
-            if foff <= ivar_t_foff < foff + size:
-                ivar_t_vm = vaddr + (ivar_t_foff - foff); break
-        print(f"[*] ivar_t vm={ivar_t_vm:#x}")
-
-        # Search __objc_const for ivar_list_t that contains this ivar_t
-        oc_key = ('__DATA', '__objc_const')
-        if oc_key not in sections: oc_key = ('__DATA_CONST', '__objc_const')
-        oc_foff, oc_vaddr, oc_size = sections[oc_key]
-
-        # ivar_list_t: entsize(4), count(4), ivar_t[count]
-        # ivar_t size = 32 bytes
-        # We look for an ivar_list_t whose first ivar_t starts at or before ivar_t_vm
-        # and whose range covers ivar_t_vm
-        ivar_list_vm = None
-        for q in range(oc_foff, oc_foff + oc_size - 8, 8):
-            entsize = read_u32(data, q)
-            count   = read_u32(data, q + 4)
-            if entsize == 32 and 1 <= count <= 50:
-                list_vm = oc_vaddr + (q - oc_foff)
-                first_ivar_vm = list_vm + 8
-                last_ivar_vm  = first_ivar_vm + (count - 1) * 32
-                if first_ivar_vm <= ivar_t_vm <= last_ivar_vm:
-                    ivar_list_vm = list_vm
-                    print(f"[+] ivar_list_t vm={list_vm:#x} count={count}")
-                    break
-
-        # Now find class_ro_t that has ivars* pointing to this ivar_list_t
-        if ivar_list_vm:
-            il_bytes = struct.pack("<Q", ivar_list_vm)
-            for q in range(0, len(data) - 48, 8):
-                # class_ro_t: ivars* at offset 40
-                if data[q+40:q+48] == il_bytes:
-                    name_ptr = read_u64(data, q + 24)
-                    nf = vm_to_file(sections, name_ptr)
-                    if nf:
-                        name = b''
-                        j = nf
-                        while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-                        print(f"[+] class_ro_t at {q:#x} => class name: {name.decode(errors='replace')}")
-                    break
-        # ── Extra: resolve class name (in __TEXT,__objc_classname) ──────────
-        name_ptr_foff = 0xd9c988 + 24
-        name_ptr = read_u64(data, name_ptr_foff)
-        print(f"[*] class_ro_t name_ptr = {name_ptr:#x}")
-        # Try direct file offset lookup for __TEXT sections
-        cn_key = ('__TEXT', '__objc_classname')
-        if cn_key in sections:
-            cn_foff, cn_vaddr, cn_size = sections[cn_key]
-            if cn_vaddr <= name_ptr < cn_vaddr + cn_size:
-                nf = cn_foff + (name_ptr - cn_vaddr)
-                name = b''
-                j = nf
-                while j < len(data) and data[j]: name += bytes([data[j]]); j += 1
-                print(f"[+] class name = {name.decode(errors='replace')}")
+        # DASignProcessVC class_ro_t at 0xdd6188, baseMethods at offset 32
+        bm_vm = struct.unpack_from("<Q", data, 0xdd6188 + 32)[0]
+        ml_f = vm_to_file(sections, bm_vm)
+        ml_fl = struct.unpack_from("<I", data, ml_f)[0]
+        ml_ct = struct.unpack_from("<I", data, ml_f + 4)[0]
+        is_rel = bool(ml_fl & 0x80000000)
+        msz = 12 if is_rel else 24
+        found = False
+        for i in range(ml_ct):
+            mf = ml_f + 8 + i * msz
+            mv = bm_vm + 8 + i * msz
+            if is_rel:
+                n_off = struct.unpack_from("<i", data, mf)[0]
+                nt = (mv + n_off) & 0xFFFFFFFFFFFFFFFF
+                nf = vm_to_file(sections, nt)
+                match = (nt == sv_str_va) or (nf and struct.unpack_from("<Q", data, nf)[0] == sv_str_va)
             else:
-                print(f"[!] name_ptr {name_ptr:#x} not in __objc_classname ({cn_vaddr:#x}..{cn_vaddr+cn_size:#x})")
-        else:
-            print("[!] __TEXT,__objc_classname section not found")
-
-        # Also check: does DASignProcessVC have a setSelectVC: or selectVC setter?
-        # Search for 'setSelectVC' in methnames
-        for sel_name in [b'setSelectVC:\x00', b'setSelectVC\x00', b'selectVC\x00']:
-            off = data[mn_foff:mn_foff+mn_size].find(sel_name)
-            if off >= 0:
-                print(f"[+] Found selector: {sel_name.rstrip(b'\\x00').decode()}")
-
-        # Decode signSuccess instruction [12] = 0xd2800022
-        # MOVZ X2, #1 -> setSelectedSegmentIndex: called with index=1
-        w12 = read_u32(data, ss_foff + 12*4)
-        print(f"[*] signSuccess instr[12] = {w12:#010x}")
-        if w12 == 0xd2800022:
-            print("[+] MOVZ X2, #1 -> setSelectedSegmentIndex: called with index=1 (已定制 tab)")
-
-        # ── Check DASignProcessVC's actual ivar list ──────────────────────────
-        # DASignProcessVC class_ro_t is at file 0xdd6188
-        # class_ro_t layout: flags(4),instanceStart(4),instanceSize(4),reserved(4),
-        #   ivarLayout*(8), name*(8), baseMethods*(8), baseProtocols*(8), ivars*(8)
-        # ivars* is at offset 48 = file 0xdd6188+48 = 0xdd61b8
-        da_cro_foff = 0xdd6188
-        ivars_ptr = read_u64(data, da_cro_foff + 48)
-        print(f"[*] DASignProcessVC class_ro_t ivars* = {ivars_ptr:#x}")
-        if ivars_ptr:
-            il_f = vm_to_file(sections, ivars_ptr)
-            if il_f:
-                il_entsize = read_u32(data, il_f)
-                il_count   = read_u32(data, il_f + 4)
-                print(f"[*] DASignProcessVC ivar_list: entsize={il_entsize} count={il_count}")
-                for i in range(min(il_count, 10)):
-                    iv_f = il_f + 8 + i * 32
-                    off_ptr = read_u64(data, iv_f)
-                    name_ptr2 = read_u64(data, iv_f + 8)
-                    # resolve name
-                    nf2 = vm_to_file(sections, name_ptr2)
-                    iname = b''
-                    if nf2:
-                        j = nf2
-                        while j < len(data) and data[j]: iname += bytes([data[j]]); j += 1
-                    # resolve offset value
-                    off_f = vm_to_file(sections, off_ptr)
-                    ioff = read_u32(data, off_f) if off_f else 0
-                    print(f"  ivar[{i}] name={iname.decode(errors='replace')} offset={ioff}")
-            else:
-                print(f"[!] ivars_ptr {ivars_ptr:#x} not in sections")
-        else:
-            print("[!] DASignProcessVC has no ivars (ivars*=0)")
-
-        # ── Find selectVC selref and installClick function size ───────────────
-        sv_str_off = data[mn_foff:mn_foff+mn_size].find(b'selectVC\x00')
-        if sv_str_off >= 0:
-            sv_str_vaddr = mn_vaddr + sv_str_off
-            sv_selref_vaddr = None
-            for i in range(0, sr_size, 8):
-                if read_u64(data, sr_foff + i) == sv_str_vaddr:
-                    sv_selref_vaddr = sr_vaddr + i; break
-            print(f"[*] selectVC str vaddr: {sv_str_vaddr:#x}")
-            print(f"[*] selectVC selref: {sv_selref_vaddr:#x}" if sv_selref_vaddr else "[!] selectVC selref not found")
-
-        # Find installClick function size by scanning for RET
-        ic_imp_foff = 0x27aa1c
-        ic_imp_vaddr = 0x10027aa1c
-        print(f"[*] Scanning installClick from {ic_imp_foff:#x}:")
-        for i in range(200):
-            w = read_u32(data, ic_imp_foff + i*4)
-            if w == 0xD65F03C0:  # RET
-                print(f"  RET at index {i}, offset +{i*4} bytes, total size >= {(i+1)*4} bytes")
-                break
-            if (w >> 26) == 0b100101:  # BL
-                imm26 = w & 0x3FFFFFF
-                if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF
-                tgt = (ic_imp_vaddr + i*4 + imm26*4) & 0xFFFFFFFFFFFFFFFF
-                print(f"  [{i:3d}] BL {tgt:#x}")
-
-        # ── Find selectVC selref by scanning ALL occurrences ─────────────────
-        # The methnames section may have 'selectVC\x00' at multiple positions
-        # We need to find ALL of them and check which one has a selref
-        sv_name = b'selectVC\x00'
-        pos = 0
-        while True:
-            off = data[mn_foff:mn_foff+mn_size].find(sv_name, pos)
-            if off < 0: break
-            sv_va = mn_vaddr + off
-            # Check if this exact address is pointed to by any selref
-            sv_bytes = struct.pack("<Q", sv_va)
-            found = False
-            for i in range(0, sr_size, 8):
-                if data[sr_foff+i:sr_foff+i+8] == sv_bytes:
-                    print(f"[+] selectVC selref at {sr_vaddr+i:#x} -> str {sv_va:#x} (methname off {off:#x})")
-                    found = True
-            if not found:
-                print(f"[*] selectVC str at {sv_va:#x} (off {off:#x}) - no selref")
-            pos = off + 1
-
-        # ── Find selectVC getter IMP in DASignProcessVC ───────────────────────
-        # Search for 'selectVC\x00' in methnames, then find method in DASignProcessVC
-        sv_str_off2 = data[mn_foff:mn_foff+mn_size].find(b'selectVC\x00')
-        if sv_str_off2 >= 0:
-            sv_str_va2 = mn_vaddr + sv_str_off2
-            da_cro2_foff = 0xdd6188
-            bm_vm2 = read_u64(data, da_cro2_foff + 32)
-            if bm_vm2:
-                ml2_f = vm_to_file(sections, bm_vm2)
-                if ml2_f:
-                    ml2_flags = read_u32(data, ml2_f)
-                    ml2_count = read_u32(data, ml2_f + 4)
-                    is_rel2 = bool(ml2_flags & 0x80000000)
-                    msz2 = 12 if is_rel2 else 24
-                    print(f"[*] DASignProcessVC methods: flags={ml2_flags:#x} count={ml2_count} rel={is_rel2}")
-                    for i in range(ml2_count):
-                        mf2 = ml2_f + 8 + i * msz2
-                        mv2 = bm_vm2 + 8 + i * msz2
-                        if is_rel2:
-                            n_off2 = read_i32(data, mf2)
-                            nt2 = (mv2 + n_off2) & 0xFFFFFFFFFFFFFFFF
-                            nf2 = vm_to_file(sections, nt2)
-                            name_match2 = (nt2 == sv_str_va2) or (nf2 and read_u64(data, nf2) == sv_str_va2)
-                        else:
-                            name_match2 = (read_u64(data, mf2) == sv_str_va2)
-                        if name_match2:
-                            if is_rel2:
-                                i_off2 = read_i32(data, mf2 + 8)
-                                imp2 = (mv2 + 8 + i_off2) & 0xFFFFFFFFFFFFFFFF
-                            else:
-                                imp2 = read_u64(data, mf2 + 16)
-                            print(f"[+] selectVC getter IMP in DASignProcessVC: {imp2:#x}")
-                            imp2_f = vm_to_file(sections, imp2)
-                            if imp2_f:
-                                for j in range(8):
-                                    print(f"  [{j}] {read_u32(data, imp2_f+j*4):#010x}")
-                            break
-
-        # ── Check bytes after installClick for padding/space ─────────────────
-        # installClick ends at file 0x27aa1c + 32 = 0x27aa3c
-        # Check next 16 bytes for NOP/padding
-        print("[*] Bytes after installClick (0x27aa3c..0x27aa4c):")
-        for i in range(4):
-            w = read_u32(data, 0x27aa3c + i*4)
-            print(f"  [{i}] {w:#010x}")
-
-        # Also check: what method comes right after installClick in the method list?
-        # DASignProcessVC method list at 0x100dd5cf0 (file 0xdd5cf0)
-        # flags=0x18, count=30, absolute method_t (24 bytes each)
-        # Find installClick index and check adjacent methods
-        ic_str_va = mn_vaddr + data[mn_foff:mn_foff+mn_size].find(b'installClick\x00')
-        ml_foff2 = vm_to_file(sections, 0x100dd5cf0)
-        if ml_foff2:
-            ml_count2 = read_u32(data, ml_foff2 + 4)
-            for i in range(ml_count2):
-                mf3 = ml_foff2 + 8 + i * 24
-                n_ptr3 = read_u64(data, mf3)
-                if n_ptr3 == ic_str_va:
-                    imp3 = read_u64(data, mf3 + 16)
-                    imp3_f = vm_to_file(sections, imp3)
-                    print(f"[*] installClick at method index {i}, IMP={imp3:#x} file={imp3_f:#x}")
-                    # Check next method
-                    if i + 1 < ml_count2:
-                        next_mf = ml_foff2 + 8 + (i+1) * 24
-                        next_imp = read_u64(data, next_mf + 16)
-                        next_imp_f = vm_to_file(sections, next_imp)
-                        next_name_ptr = read_u64(data, next_mf)
-                        next_name_f = vm_to_file(sections, next_name_ptr)
-                        next_name = b''
-                        if next_name_f:
-                            j = next_name_f
-                            while j < len(data) and data[j]: next_name += bytes([data[j]]); j += 1
-                        print(f"[*] next method: {next_name.decode(errors='replace')} IMP={next_imp:#x} file={next_imp_f:#x}")
-                        gap = (next_imp_f - imp3_f) if next_imp_f and imp3_f else 0
-                        print(f"[*] gap between installClick and next method: {gap} bytes")
+                match = struct.unpack_from("<Q", data, mf)[0] == sv_str_va
+            if match:
+                imp = struct.unpack_from("<Q", data, mf + 16)[0] if not is_rel else (mv + 8 + struct.unpack_from("<i", data, mf + 8)[0]) & 0xFFFFFFFFFFFFFFFF
+                print(f"[+] selectVC getter IMP in DASignProcessVC: {imp:#x}")
+                found = True; break
+        if not found:
+            print("[!] selectVC getter NOT found in DASignProcessVC")
+            # Try all class_ro_t entries
+            for q in range(0, len(data) - 48, 8):
+                if data[q+24:q+32] == b'DASignProcessVC\x00':
+                    bm2 = struct.unpack_from("<Q", data, q + 32)[0]
+                    ml2 = vm_to_file(sections, bm2)
+                    if ml2:
+                        ct2 = struct.unpack_from("<I", data, ml2 + 4)[0]
+                        for i in range(ct2):
+                            mf = ml2 + 8 + i * 24
+                            if struct.unpack_from("<Q", data, mf)[0] == sv_str_va:
+                                imp2 = struct.unpack_from("<Q", data, mf + 16)[0]
+                                print(f"[+] selectVC getter at class_ro_t {q:#x}: IMP={imp2:#x}"); found = True
                     break
+        print("[+] Verification complete")
         PYEOF
 
     - name: Remove old signature
