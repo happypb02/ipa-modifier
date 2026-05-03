@@ -16,8 +16,8 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Patch binary
-      run: python3 patch_noop.py
+    - name: Find installClick function
+      run: python3 find_installclick.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
