@@ -220,8 +220,8 @@ def b_insn(pc_va, target_va):
     imm26 = ((off >> 2) & 0x3FFFFFF)
     return struct.pack("<I", 0x14000000 | imm26)
 
-# Litpool starts at base+32 (after 32 bytes of code)
-litpool_va = base + 32
+# Litpool starts at base+36 (after 36 bytes of code)
+litpool_va = base + 36
 
 patch = bytearray()
 patch += bytes([0xa9, 0xbf, 0x7b, 0xfd])   # STP X29,X30,[SP,#-32]!
@@ -238,15 +238,15 @@ patch += adr_imm(1, base+24, litpool_va+8)
 patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
 patch += b_insn(base+32, objc_msgSend_vaddr)
 
-assert len(patch) == 32, "code part is {0} bytes (expected 32)".format(len(patch))
+assert len(patch) == 36, "code part is {0} bytes (expected 36)".format(len(patch))
 
 # Litpool
 patch += struct.pack("<Q", sv_selref_vaddr)  # selectVC selref
 patch += struct.pack("<Q", ss_selref_vaddr)  # signSuccess selref
 
-assert len(patch) == 48, "patch size {0} (expected 48)".format(len(patch))
+assert len(patch) == 52, "patch size {0} (expected 52)".format(len(patch))
 
-data[installclick_imp_foff:installclick_imp_foff + 48] = patch
+data[installclick_imp_foff:installclick_imp_foff + 52] = patch
 print("[+] Wrote {0}-byte ARM64 patch at file offset {1:#x}".format(len(patch), installclick_imp_foff))
 
 with open(binary_path, "wb") as f:
