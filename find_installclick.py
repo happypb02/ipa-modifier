@@ -126,17 +126,33 @@ print(f"[+] Using {installclick_addr:#x} as installClick")
 
 # Find function start (scan backwards for function prologue)
 search_start = installclick_addr - text_vaddr
-for i in range(search_start, max(0, search_start - 1024), -4):
+func_start = None
+func_start_foff = None
+
+for i in range(search_start, max(0, search_start - 2048), -4):
     insn = read_u32(data, text_foff + i)
-    # Look for STP X29, X30, [SP, #-xx]!
-    if (insn & 0xFFC07FFF) == 0xA9807BFD or (insn & 0xFFC07FFF) == 0xA9BF7BFD:
+    # Look for STP X29, X30, [SP, #-xx]! or similar prologues
+    # STP X29, X30, [SP, #-0x10]! = 0xa9bf7bfd
+    # STP X29, X30, [SP, #-0x20]! = 0xa9be7bfd
+    # etc.
+    if (insn & 0xFFC07FFF) == 0xA9807BFD or \
+       (insn & 0xFFE07FFF) == 0xA9A07BFD or \
+       (insn & 0xFFC00000) == 0xA9800000:  # Any STP with writeback
         func_start = text_vaddr + i
         func_start_foff = text_foff + i
-        print(f"[+] Function starts at: {func_start:#x} (file offset {func_start_foff:#x})")
-
-        # Dump first 64 bytes
-        print("\n[*] First 16 instructions:")
-        for j in range(0, 64, 4):
-            insn = read_u32(data, func_start_foff + j)
-            print(f"  {func_start + j:#x}: {insn:08x}")
+        print(f"[+] Potential function start at: {func_start:#x} (file offset {func_start_foff:#x})")
+        print(f"    Prologue instruction: {insn:08x}")
         break
+
+if not func_start:
+    print("[!] Could not find function prologue, using reference address")
+    func_start = installclick_addr
+    func_start_foff = text_foff + (installclick_addr - text_vaddr)
+
+# Dump first 128 bytes
+print(f"\n[*] Code at {func_start:#x}:")
+for j in range(0, 128, 4):
+    insn = read_u32(data, func_start_foff + j)
+    addr = func_start + j
+    marker = " <-- ref" if addr == installclick_addr else ""
+    print(f"  {addr:#x}: {insn:08x}{marker}")
