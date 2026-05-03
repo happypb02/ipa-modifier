@@ -128,15 +128,24 @@ for search_foff in range(0, len(data) - 48, 8):
                     entsize = read_u32(data, methods_foff) & 0xFFFF
                     count = read_u32(data, methods_foff + 4)
 
+                    print(f"[+] Found {count} methods in DASignProcessVC")
                     for i in range(count):
                         method_base = methods_foff + 8 + i * entsize
                         sel_vm = read_u64(data, method_base)
                         imp_vm = read_u64(data, method_base + 8)
 
-                        if sel_vm == ic_selref_vaddr:
-                            installclick_imp_vaddr = imp_vm
-                            print(f"[+] installClick IMP at: {installclick_imp_vaddr:#x}")
-                            break
+                        # Debug: print all method selectors
+                        for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
+                            if vaddr2 <= sel_vm < vaddr2 + size2:
+                                sel_foff = foff2 + (sel_vm - vaddr2)
+                                sel_end = data.find(b'\x00', sel_foff)
+                                if sel_end > sel_foff:
+                                    sel_name = data[sel_foff:sel_end].decode('utf-8', errors='ignore')
+                                    print(f"  Method: {sel_name} (sel={sel_vm:#x}, imp={imp_vm:#x})")
+                                    if sel_name == 'installClick':
+                                        installclick_imp_vaddr = imp_vm
+                                        print(f"[+] Found installClick IMP at: {installclick_imp_vaddr:#x}")
+                                break
                     break
         if installclick_imp_vaddr:
             break
