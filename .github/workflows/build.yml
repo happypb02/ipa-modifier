@@ -249,10 +249,10 @@ jobs:
 
         def stp_pre(rt1, rt2, rn, imm):   # STP Xt1,Xt2,[Xn,#imm]!
             # imm7: 7-bit sign-magnitude encoding
-            # positive: bits[6:0] = imm//8, sign bit (bit6) clear
-            # negative: bits[6:0] = ~(abs(imm)//8), sign bit set
+            # positive: imm7 = abs(imm) >> 3
+            # negative: imm7 = (abs(imm) >> 3) ^ 0x40  (sign bit set, bits[5:0] = two's comp of magnitude)
             v = abs(imm) >> 3
-            imm7 = v if imm >= 0 else (~v & 0x7F)
+            imm7 = v ^ 0x40 if imm < 0 else v
             return struct.pack("<I", 0xA9800000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt1)
 
         def ldp_post(rt1, rt2, rn, imm):   # LDP Xt1,Xt2,[Xn],#imm  (unsigned imm7)
@@ -380,7 +380,7 @@ jobs:
 
         # 验证第一条指令: STP X29,X30,[SP,#-16]! = 0xA9BF7DFD
         w0 = struct.unpack_from("<I", patch_bytes, 0)[0]
-        print(f"[*] instr[0] = {w0:#010x}  {'OK (STP PRE)' if w0 == 0xA9BF7DFD else 'CHECK'}")
+        print(f"[*] instr[0] = {w0:#010x}  {'OK (STP PRE)' if w0 == 0xA9BF7DFD else 'CHECK (expected 0xa9bf7dfd)'}")
 
         # 验证 ADRP+LDR 对 sv_selref (0x100ee5670)
         w2 = struct.unpack_from("<I", patch_bytes, 8)[0]
