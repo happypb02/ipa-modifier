@@ -18,28 +18,19 @@ jobs:
         sudo apt-get update -q
         sudo apt-get install -y git unzip zip perl curl clang lld
 
-    - name: Get Logos preprocessor
+    - name: Get Logos preprocessor and iOS headers
       run: |
-        git clone --depth=1 --filter=blob:none --sparse \
-          https://github.com/theos/theos.git /tmp/theos
-        cd /tmp/theos
-        git sparse-checkout set vendor/logos vendor/include
+        # 克隆 theos (只要 logos 和 headers)
+        git clone --depth=1 https://github.com/theos/logos.git /tmp/logos
+        git clone --depth=1 https://github.com/theos/headers.git /tmp/ios-headers
         echo "Logos ready"
-
-    - name: Get iOS headers (lightweight)
-      run: |
-        # 只需要头文件，不需要完整 SDK
-        git clone --depth=1 --filter=blob:none --sparse \
-          https://github.com/theos/headers.git /tmp/ios-headers
-        cd /tmp/ios-headers
-        git sparse-checkout set .
+        ls /tmp/logos/bin/
         ls /tmp/ios-headers/ | head -10
 
     - name: Convert Tweak.x to ObjC with Logos
       run: |
-        perl /tmp/theos/vendor/logos/bin/logos.pl \
-          InstallRedirect/Tweak.x > /tmp/Tweak.mm
-        echo "--- First 30 lines of converted file ---"
+        perl /tmp/logos/bin/logos.pl InstallRedirect/Tweak.x > /tmp/Tweak.mm
+        echo "--- First 30 lines ---"
         head -30 /tmp/Tweak.mm
 
     - name: Compile dylib
