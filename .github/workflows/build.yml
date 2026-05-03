@@ -13,30 +13,82 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Setup Theos
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git curl perl
+        git clone --recursive https://github.com/theos/theos.git /opt/theos
+        curl -LO https://github.com/sbingner/llvm-project/releases/latest/download/linux-ios-arm64e-clang-toolchain.tar.lzma
+        TMP=$(mktemp -d)
+        tar -xvf linux-ios-arm64e-clang-toolchain.tar.lzma -C $TMP
+        mkdir -p /opt/theos/toolchain/linux/iphone
+        mv $TMP/ios-arm64e-clang-toolchain/* /opt/theos/toolchain/linux/iphone/
+        curl -LO https://github.com/theos/sdks/archive/master.zip
+        unzip master.zip
+        mv sdks-master/* /opt/theos/sdks/
+
+    - name: Build Tweak
+      run: |
+        cd InstallRedirect
+        export THEOS=/opt/theos
+        make package FINALPACKAGE=1
+
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Patch binary
+    - name: Inject Tweak
       run: |
-        python3 patch_binary.py > error.txt 2>&1 || true
-        cat error.txt
+        mkdir -p temp/Payload/DumpApp.app/Frameworks
+        cp InstallRedirect/.theos/obj/debug/InstallRedirect.dylib temp/Payload/DumpApp.app/Frameworks/
 
-    - name: Commit error log
-      if: failure()
-      run: |
-        git config user.name "GitHub Actions"
-        git config user.email "actions@github.com"
-        git add error.txt
-        git commit -m "Add error log" || true
-        git push || true
+        # Add load command to binary
+        python3 << 'EOF'
+        import struct, sys
 
-    - name: Upload patch log on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: patch-log
-        path: patch_output.log
-        retention-days: 1
+        binary = "temp/Payload/DumpApp.app/DumpApp"
+        with open(binary, "rb") as f:
+            data = bytearray(f.read())
+
+        # Find ARM64 slice
+        magic = struct.unpack("<I", data[0:4])[0]
+        if magic == 0xCAFEBABE:  # FAT binary
+            narch = struct.unpack(">I", data[4:8])[0]
+            for i in range(narch):
+                base = 8 + i * 20
+                cpu_type = struct.unpack(">I", data[base:base+4])[0]
+                if cpu_type == 0x0100000C:  # ARM64
+                    offset = struct.unpack(">I", data[base+8:base+12])[0]
+                    break
+        else:
+            offset = 0
+
+        # Read mach header
+        ncmds = struct.unpack("<I", data[offset+16:offset+20])[0]
+        sizeofcmds = struct.unpack("<I", data[offset+20:offset+24])[0]
+
+        # Create LC_LOAD_DYLIB command
+        dylib_path = "@executable_path/Frameworks/InstallRedirect.dylib"
+        path_len = len(dylib_path) + 1
+        cmd_size = 24 + ((path_len + 7) // 8) * 8  # Align to 8 bytes
+
+        lc_load_dylib = struct.pack("<II", 0xC, cmd_size)  # LC_LOAD_DYLIB
+        lc_load_dylib += struct.pack("<IIII", 24, 0, 0, 0)  # dylib struct
+        lc_load_dylib += dylib_path.encode() + b'\x00'
+        lc_load_dylib += b'\x00' * (cmd_size - 24 - path_len)
+
+        # Insert after mach header
+        insert_pos = offset + 32 + sizeofcmds
+        data[insert_pos:insert_pos] = lc_load_dylib
+
+        # Update header
+        data[offset+16:offset+20] = struct.pack("<I", ncmds + 1)
+        data[offset+20:offset+24] = struct.pack("<I", sizeofcmds + cmd_size)
+
+        with open(binary, "wb") as f:
+            f.write(data)
+
+        print("[+] Injected InstallRedirect.dylib")
+        EOF
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
