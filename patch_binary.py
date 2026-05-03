@@ -151,9 +151,66 @@ for i in range(0, sr_size, 8):
         sv_selref_vaddr = sr_vaddr + i
         print(f"[+] Found selectVC selref at: {sv_selref_vaddr:#x}")
 
-print("[+] installClick selref: {0:#x}".format(ic_selref_vaddr) if ic_selref_vaddr else "[!] installClick selref not found")
-print("[+] signSuccess  selref: {0:#x}".format(ss_selref_vaddr) if ss_selref_vaddr else "[!] signSuccess selref not found")
-print("[+] selectVC selref: {0:#x}".format(sv_selref_vaddr) if sv_selref_vaddr else "[!] selectVC selref not found")
+# Find DASignProcessVC class and its selectVC ivar offset
+print("\n[*] Looking for selectVC ivar offset...")
+
+selectvc_ivar_offset = None
+# Find class_ro_t for DASignProcessVC
+classname = b'DASignProcessVC\x00'
+classname_foff = data.find(classname)
+classname_vaddr = None
+for (seg, sect), (foff, vaddr, size) in sections.items():
+    if foff <= classname_foff < foff + size:
+        classname_vaddr = vaddr + (classname_foff - foff)
+        break
+
+if classname_vaddr:
+    classname_bytes = struct.pack("<Q", classname_vaddr)
+    for search_foff in range(0, len(data) - 48, 8):
+        if data[search_foff+24:search_foff+32] == classname_bytes:
+            # Found class_ro_t, check ivars
+            ivars_ptr = read_u64(data, search_foff + 48)
+            if ivars_ptr:
+                # Find ivars section
+                for (seg, sect), (foff, vaddr, size) in sections.items():
+                    if vaddr <= ivars_ptr < vaddr + size:
+                        ivars_foff = foff + (ivars_ptr - vaddr)
+                        # Read ivar_list_t
+                        entsize = struct.unpack("<I", data[ivars_foff:ivars_foff+4])[0]
+                        count = struct.unpack("<I", data[ivars_foff+4:ivars_foff+8])[0]
+                        print(f"[+] Found {count} ivars in DASignProcessVC")
+
+                        # Each ivar_t is 32 bytes
+                        for i in range(count):
+                            ivar_base = ivars_foff + 8 + i * 32
+                            ivar_offset_ptr = read_u64(data, ivar_base)
+                            ivar_name_ptr = read_u64(data, ivar_base + 8)
+
+                            # Find ivar name
+                            for (seg2, sect2), (foff2, vaddr2, size2) in sections.items():
+                                if vaddr2 <= ivar_name_ptr < vaddr2 + size2:
+                                    name_foff = foff2 + (ivar_name_ptr - vaddr2)
+                                    name_end = data.find(b'\x00', name_foff)
+                                    ivar_name = data[name_foff:name_end].decode('utf-8')
+
+                                    # Find offset value
+                                    for (seg3, sect3), (foff3, vaddr3, size3) in sections.items():
+                                        if vaddr3 <= ivar_offset_ptr < vaddr3 + size3:
+                                            offset_foff = foff3 + (ivar_offset_ptr - vaddr3)
+                                            offset_val = struct.unpack("<I", data[offset_foff:offset_foff+4])[0]
+                                            print(f"  - {ivar_name}: offset {offset_val}")
+
+                                            if ivar_name == '_selectVC':
+                                                selectvc_ivar_offset = offset_val
+                                                print(f"[+] Found _selectVC ivar at offset {selectvc_ivar_offset}")
+                                            break
+                                    break
+                        break
+            break
+
+if not selectvc_ivar_offset:
+    print("[!] _selectVC ivar offset not found, cannot patch")
+    sys.exit(1)
 
 # We only need installClick to be found
 if not ic_selref_vaddr:
@@ -223,19 +280,44 @@ def b_insn(pc_va, target_va):
     imm26 = ((off >> 2) & 0x3FFFFFF)
     return struct.pack("<I", 0x14000000 | imm26)
 
-# Since selectVC selref is not found, we'll just make installClick a no-op (return immediately)
-# This is simpler than trying to inject complex logic
+# Since selectVC selref is not found, we'll read selectVC directly from ivar
+# Then call [selectVC signSuccess]
 
 base = installclick_imp_vaddr
 
+# Litpool starts at base+24 (after 24 bytes of code)
+litpool_va = base + 24
+
 patch = bytearray()
-patch += bytes([0xd6, 0x5f, 0x03, 0xc0])   # RET
+patch += bytes([0xa9, 0xbf, 0x7b, 0xfd])   # STP X29,X30,[SP,#-32]!
+patch += bytes([0x91, 0x00, 0x3f, 0xfd])   # ADD X29,SP,#0
 
-assert len(patch) == 4, "patch size {0} (expected 4)".format(len(patch))
+# Load selectVC from ivar: X0 = *(self + offset)
+offset_imm = selectvc_ivar_offset
+if offset_imm % 8 == 0:
+    # LDR X0,[X0,#offset]
+    ldr_imm = (offset_imm // 8) & 0xFFF
+    patch += struct.pack("<I", 0xF9400000 | (ldr_imm << 10))
+else:
+    print(f"[!] Unsupported ivar offset {offset_imm} (not 8-byte aligned)")
+    sys.exit(1)
 
-data[installclick_imp_foff:installclick_imp_foff + 4] = patch
+# Restore and tail call [selectVC signSuccess]
+patch += bytes([0xa8, 0xc1, 0x7b, 0xfd])   # LDP X29,X30,[SP],#32
+patch += adr_imm(1, base+16, litpool_va)
+patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
+patch += b_insn(base+24, objc_msgSend_vaddr)
+
+assert len(patch) == 24, "code part is {0} bytes (expected 24)".format(len(patch))
+
+# Litpool
+patch += struct.pack("<Q", ss_selref_vaddr)  # signSuccess selref
+
+assert len(patch) == 32, "patch size {0} (expected 32)".format(len(patch))
+
+data[installclick_imp_foff:installclick_imp_foff + 32] = patch
 print("[+] Wrote {0}-byte ARM64 patch at file offset {1:#x}".format(len(patch), installclick_imp_foff))
-print("[+] installClick now returns immediately (no-op)")
+print("[+] installClick now reads selectVC from ivar and calls signSuccess")
 
 with open(binary_path, "wb") as f:
     f.write(data)
