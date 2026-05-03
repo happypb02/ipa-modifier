@@ -22,9 +22,15 @@ jobs:
           -framework Foundation -framework UIKit \
           -dynamiclib -o libhook.dylib hook.m
 
+    - name: Install insert_dylib
+      run: |
+        git clone https://github.com/Tyilo/insert_dylib.git
+        cd insert_dylib
+        make
+        sudo cp insert_dylib /usr/local/bin/
+
     - name: Inject dylib
       run: |
-        brew install insert_dylib
         mkdir -p temp/Payload/DumpApp.app/Frameworks
         cp libhook.dylib temp/Payload/DumpApp.app/Frameworks/
         insert_dylib @executable_path/Frameworks/libhook.dylib temp/Payload/DumpApp.app/DumpApp --inplace --weak
