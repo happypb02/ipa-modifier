@@ -743,6 +743,45 @@ jobs:
                                 for j in range(8):
                                     print(f"  [{j}] {read_u32(data, imp2_f+j*4):#010x}")
                             break
+
+        # ── Check bytes after installClick for padding/space ─────────────────
+        # installClick ends at file 0x27aa1c + 32 = 0x27aa3c
+        # Check next 16 bytes for NOP/padding
+        print("[*] Bytes after installClick (0x27aa3c..0x27aa4c):")
+        for i in range(4):
+            w = read_u32(data, 0x27aa3c + i*4)
+            print(f"  [{i}] {w:#010x}")
+
+        # Also check: what method comes right after installClick in the method list?
+        # DASignProcessVC method list at 0x100dd5cf0 (file 0xdd5cf0)
+        # flags=0x18, count=30, absolute method_t (24 bytes each)
+        # Find installClick index and check adjacent methods
+        ic_str_va = mn_vaddr + data[mn_foff:mn_foff+mn_size].find(b'installClick\x00')
+        ml_foff2 = vm_to_file(sections, 0x100dd5cf0)
+        if ml_foff2:
+            ml_count2 = read_u32(data, ml_foff2 + 4)
+            for i in range(ml_count2):
+                mf3 = ml_foff2 + 8 + i * 24
+                n_ptr3 = read_u64(data, mf3)
+                if n_ptr3 == ic_str_va:
+                    imp3 = read_u64(data, mf3 + 16)
+                    imp3_f = vm_to_file(sections, imp3)
+                    print(f"[*] installClick at method index {i}, IMP={imp3:#x} file={imp3_f:#x}")
+                    # Check next method
+                    if i + 1 < ml_count2:
+                        next_mf = ml_foff2 + 8 + (i+1) * 24
+                        next_imp = read_u64(data, next_mf + 16)
+                        next_imp_f = vm_to_file(sections, next_imp)
+                        next_name_ptr = read_u64(data, next_mf)
+                        next_name_f = vm_to_file(sections, next_name_ptr)
+                        next_name = b''
+                        if next_name_f:
+                            j = next_name_f
+                            while j < len(data) and data[j]: next_name += bytes([data[j]]); j += 1
+                        print(f"[*] next method: {next_name.decode(errors='replace')} IMP={next_imp:#x} file={next_imp_f:#x}")
+                        gap = (next_imp_f - imp3_f) if next_imp_f and imp3_f else 0
+                        print(f"[*] gap between installClick and next method: {gap} bytes")
+                    break
         PYEOF
 
     - name: Remove old signature
