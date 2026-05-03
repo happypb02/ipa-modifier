@@ -205,55 +205,77 @@ jobs:
         if selectvc_ivar_offset is None:
             print("[!] selectVC ivar offset not found"); sys.exit(1)
 
-        # Find installClick IMP
-        # iOS 16+ "direct selector" relative method lists:
-        #   name_off = relative offset from name field to selector STRING (in __objc_methname)
-        #   imp_off  = relative offset from imp field to stub in __TEXT,__objc_stubs
-        # The stub is a single B instruction to the real implementation.
+        # Find installClick IMP via class object chain
+        # class_ro_t layout (64-bit): flags(4), instanceStart(4), instanceSize(4),
+        #   reserved(4), ivarLayout(8), name*(8), baseMethods*(8), ...
+        # name is at offset 24, baseMethods at offset 32
 
         installclick_imp_vaddr = None
-
-        # ic_str_vaddr = address of "installClick\0" in __objc_methname
         ic_str_vaddr = mn_vaddr + ic_off
         print(f"[*] installClick str vaddr: {ic_str_vaddr:#x}")
 
-        # Search all DATA/TEXT sections for a relative method_t whose name points to ic_str_vaddr
-        for seg, sect in list(sections.keys()):
-            foff, vaddr, size = sections[(seg, sect)]
-            p = foff
-            while p < foff + size - 12:
-                name_field_vaddr = vaddr + (p - foff)
-                name_off = read_i32(data, p)
-                if name_off != 0:
-                    target = (name_field_vaddr + name_off) & 0xFFFFFFFFFFFFFFFF
-                    if target == ic_str_vaddr or target == ic_selref_vaddr:
-                        imp_field_vaddr = name_field_vaddr + 8
-                        imp_off = read_i32(data, p + 8)
-                        imp_vaddr = (imp_field_vaddr + imp_off) & 0xFFFFFFFFFFFFFFFF
-                        imp_foff  = vm_to_file(sections, imp_vaddr)
-                        print(f"[*] candidate: name_field={name_field_vaddr:#x} target={target:#x} imp_vaddr={imp_vaddr:#x} imp_foff={imp_foff}")
-                        if imp_foff:
-                            # If imp points to __objc_stubs, follow the B instruction
-                            stubs_key2 = ('__TEXT', '__objc_stubs')
-                            if stubs_key2 in sections:
-                                s_foff, s_vaddr, s_size = sections[stubs_key2]
-                                if s_vaddr <= imp_vaddr < s_vaddr + s_size:
-                                    # stub is a B instruction: bits[31:26]=000101, imm26
-                                    stub_instr = read_u32(data, imp_foff)
-                                    if (stub_instr >> 26) == 0b000101:
-                                        imm26 = stub_instr & 0x3FFFFFF
-                                        if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF  # sign extend
-                                        real_imp = (imp_vaddr + imm26 * 4) & 0xFFFFFFFFFFFFFFFF
-                                        real_foff = vm_to_file(sections, real_imp)
-                                        print(f"[+] stub B -> real IMP: {real_imp:#x} foff={real_foff}")
-                                        if real_foff:
-                                            imp_vaddr = real_imp
-                                            imp_foff  = real_foff
-                            installclick_imp_vaddr = imp_vaddr
-                            print(f"[+] installClick IMP vm: {imp_vaddr:#x}")
-                            break
-                p += 4
-            if installclick_imp_vaddr: break
+        classname = b'DASignProcessVC\x00'
+        classname_foff = data.find(classname)
+        print(f"[*] DASignProcessVC at file offset: {classname_foff:#x}")
+
+        classname_vaddr = None
+        for (seg, sect), (foff, vaddr, size) in sections.items():
+            if foff <= classname_foff < foff + size:
+                classname_vaddr = vaddr + (classname_foff - foff); break
+        print(f"[*] DASignProcessVC vaddr: {classname_vaddr:#x}" if classname_vaddr else "[!] classname vaddr not found")
+
+        if classname_vaddr:
+            classname_bytes = struct.pack("<Q", classname_vaddr)
+            # Search entire binary for class_ro_t with this name pointer at offset 24
+            for search_foff in range(0, len(data) - 48, 8):
+                if data[search_foff+24:search_foff+32] == classname_bytes:
+                    base_methods_vm = read_u64(data, search_foff + 32)
+                    print(f"[*] class_ro_t at {search_foff:#x}, baseMethods vm: {base_methods_vm:#x}")
+                    if base_methods_vm:
+                        ml_foff = vm_to_file(sections, base_methods_vm)
+                        if ml_foff:
+                            ml_flags = read_u32(data, ml_foff)
+                            ml_count = read_u32(data, ml_foff + 4)
+                            is_rel   = bool(ml_flags & 0x80000000)
+                            print(f"[*] method list: flags={ml_flags:#x} count={ml_count} relative={is_rel}")
+                            msz = 12 if is_rel else 24
+                            for i in range(ml_count):
+                                m_foff  = ml_foff + 8 + i * msz
+                                m_vaddr = base_methods_vm + 8 + i * msz
+                                if is_rel:
+                                    n_off = read_i32(data, m_foff)
+                                    n_target = (m_vaddr + n_off) & 0xFFFFFFFFFFFFFFFF
+                                    # n_target may be selref or string
+                                    match = (n_target == ic_selref_vaddr or n_target == ic_str_vaddr)
+                                    if not match:
+                                        # check if n_target is a selref pointing to ic_str
+                                        nf = vm_to_file(sections, n_target)
+                                        if nf and read_u64(data, nf) == ic_str_vaddr:
+                                            match = True
+                                    if match:
+                                        i_off = read_i32(data, m_foff + 8)
+                                        imp_va = (m_vaddr + 8 + i_off) & 0xFFFFFFFFFFFFFFFF
+                                        # follow B stub if needed
+                                        stubs_k = ('__TEXT', '__objc_stubs')
+                                        if stubs_k in sections:
+                                            sk_foff, sk_vaddr, sk_size = sections[stubs_k]
+                                            if sk_vaddr <= imp_va < sk_vaddr + sk_size:
+                                                sf = vm_to_file(sections, imp_va)
+                                                instr = read_u32(data, sf)
+                                                if (instr >> 26) == 0b000101:
+                                                    imm26 = instr & 0x3FFFFFF
+                                                    if imm26 & 0x2000000: imm26 |= ~0x3FFFFFF
+                                                    imp_va = (imp_va + imm26 * 4) & 0xFFFFFFFFFFFFFFFF
+                                        installclick_imp_vaddr = imp_va
+                                        print(f"[+] installClick IMP vm: {imp_va:#x}")
+                                        break
+                                else:
+                                    n_ptr = read_u64(data, m_foff)
+                                    if n_ptr == ic_selref_vaddr:
+                                        installclick_imp_vaddr = read_u64(data, m_foff + 16)
+                                        print(f"[+] installClick IMP vm (abs): {installclick_imp_vaddr:#x}")
+                                        break
+                    if installclick_imp_vaddr: break
 
         if not installclick_imp_vaddr:
             print("[!] installClick IMP not found"); sys.exit(1)
