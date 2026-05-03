@@ -21,13 +21,13 @@ jobs:
         python3 << 'PYEOF'
         import struct, sys
 
-        binary_path = “temp/Payload/DumpApp.app/DumpApp”
+        binary_path = "temp/Payload/DumpApp.app/DumpApp"
 
-        with open(binary_path, “rb”) as f:
+        with open(binary_path, "rb") as f:
             data = bytearray(f.read())
 
-        def read_u32(data, off): return struct.unpack_from(“<I”, data, off)[0]
-        def read_u64(data, off): return struct.unpack_from(“<Q”, data, off)[0]
+        def read_u32(data, off): return struct.unpack_from("<I", data, off)[0]
+        def read_u64(data, off): return struct.unpack_from("<Q", data, off)[0]
 
         LC_SEGMENT_64 = 0x19
         LC_SYMTAB     = 0x2
@@ -67,13 +67,13 @@ jobs:
         # Locate ARM64 slice
         magic  = read_u32(data, 0)
         mh_off = 0
-        if magic == struct.unpack(“>I”, b'\xCA\xFE\xBA\xBE')[0]:
-            narch = struct.unpack_from(“>I”, data, 4)[0]
+        if magic == struct.unpack(">I", b'\xCA\xFE\xBA\xBE')[0]:
+            narch = struct.unpack_from(">I", data, 4)[0]
             for i in range(narch):
                 base     = 8 + i * 20
-                cpu_type = struct.unpack_from(“>I”, data, base)[0]
+                cpu_type = struct.unpack_from(">I", data, base)[0]
                 if cpu_type == 0x0100000C:
-                    mh_off = struct.unpack_from(“>I”, data, base + 8)[0]
+                    mh_off = struct.unpack_from(">I", data, base + 8)[0]
                     break
 
         sections, sec_reserved1 = find_sections(data, mh_off)
@@ -111,11 +111,11 @@ jobs:
                     sym_name += bytes([data[j]]); j += 1
                 if sym_name == b'_objc_msgSend':
                     objc_msgSend_vaddr = stubs_vaddr + i * stub_sz
-                    print(f”[+] _objc_msgSend stub vm: {objc_msgSend_vaddr:#x}”)
+                    print(f"[+] _objc_msgSend stub vm: {objc_msgSend_vaddr:#x}")
                     break
 
         if not objc_msgSend_vaddr:
-            print(“[!] _objc_msgSend not found”); sys.exit(1)
+            print("[!] _objc_msgSend not found"); sys.exit(1)
 
         # Methnames
         mn_key = ('__TEXT', '__objc_methnames')
@@ -130,7 +130,7 @@ jobs:
         si_off = methnames_data.find(b'setSelectedIndex:\x00')
 
         if ic_off < 0 or ss_off < 0 or tb_off < 0 or si_off < 0:
-            print(f”[!] Missing selectors: ic={ic_off} ss={ss_off} tb={tb_off} si={si_off}”); sys.exit(1)
+            print(f"[!] Missing selectors: ic={ic_off} ss={ss_off} tb={tb_off} si={si_off}"); sys.exit(1)
 
         ic_str_vaddr = mn_vaddr + ic_off
         ss_str_vaddr = mn_vaddr + ss_off
@@ -157,15 +157,15 @@ jobs:
                     sv_str_va2 = mn_vaddr + sv_off2
                     if ptr == sv_str_va2:
                         sv_selref_vaddr = sr_vaddr + i
-                        print(f”[+] selectVC selref: {sv_selref_vaddr:#x}”)
+                        print(f"[+] selectVC selref: {sv_selref_vaddr:#x}")
 
-        print(f”[+] installClick selref: {ic_selref_vaddr:#x}” if ic_selref_vaddr else “[!] installClick selref not found”)
-        print(f”[+] signSuccess  selref: {ss_selref_vaddr:#x}” if ss_selref_vaddr else “[!] signSuccess selref not found”)
-        print(f”[+] tabBarController selref: {tb_selref_vaddr:#x}” if tb_selref_vaddr else “[!] tabBarController selref not found”)
-        print(f”[+] setSelectedIndex: selref: {si_selref_vaddr:#x}” if si_selref_vaddr else “[!] setSelectedIndex: selref not found”)
+        print(f"[+] installClick selref: {ic_selref_vaddr:#x}" if ic_selref_vaddr else "[!] installClick selref not found")
+        print(f"[+] signSuccess  selref: {ss_selref_vaddr:#x}" if ss_selref_vaddr else "[!] signSuccess selref not found")
+        print(f"[+] tabBarController selref: {tb_selref_vaddr:#x}" if tb_selref_vaddr else "[!] tabBarController selref not found")
+        print(f"[+] setSelectedIndex: selref: {si_selref_vaddr:#x}" if si_selref_vaddr else "[!] setSelectedIndex: selref not found")
 
         if not all([ic_selref_vaddr, ss_selref_vaddr, tb_selref_vaddr, si_selref_vaddr, sv_selref_vaddr]):
-            print(“[!] Missing required selrefs”); sys.exit(1)
+            print("[!] Missing required selrefs"); sys.exit(1)
 
         # Find installClick IMP
         classname = b'DASignProcessVC\x00'
@@ -177,7 +177,7 @@ jobs:
 
         installclick_imp_vaddr = None
         if classname_vaddr:
-            classname_bytes = struct.pack(“<Q”, classname_vaddr)
+            classname_bytes = struct.pack("<Q", classname_vaddr)
             for search_foff in range(0, len(data) - 48, 8):
                 if data[search_foff+24:search_foff+32] == classname_bytes:
                     base_methods_vm = read_u64(data, search_foff + 32)
@@ -195,40 +195,40 @@ jobs:
                                     n_ptr = read_u64(data, m_foff)
                                     if n_ptr == ic_str_vaddr or n_ptr == ic_selref_vaddr:
                                         installclick_imp_vaddr = read_u64(data, m_foff + 16)
-                                        print(f”[+] installClick IMP vm: {installclick_imp_vaddr:#x}”)
+                                        print(f"[+] installClick IMP vm: {installclick_imp_vaddr:#x}")
                                         break
                     if installclick_imp_vaddr: break
 
         if not installclick_imp_vaddr:
-            print(“[!] installClick IMP not found”); sys.exit(1)
+            print("[!] installClick IMP not found"); sys.exit(1)
 
         installclick_imp_foff = vm_to_file(sections, installclick_imp_vaddr)
-        print(f”[+] installClick IMP file offset: {installclick_imp_foff:#x}”)
+        print(f"[+] installClick IMP file offset: {installclick_imp_foff:#x}")
 
-        # ── Build 112-byte patch ─────────────────────────────────────────────
+        # ?? Build 112-byte patch ?????????????????????????????????????????????
         # installClick IMP (base_va = installclick_imp_vaddr)
         # Prologue: STP+STP+ADD frame (12 bytes)
-        # Code: 17 instructions × 4 = 68 bytes
-        # Litpool: 4 × 8 = 32 bytes
+        # Code: 17 instructions x 4 = 68 bytes
+        # Litpool: 4 x 8 = 32 bytes
         # Total: 112 bytes
 
         base = installclick_imp_vaddr
 
         def adr_imm(rd, from_va, to_va):
             pc   = from_va + 4
-            off  = to_va - pc
-            imm  = (off + 0x200000) & 0x1FFFFF
-            return struct.pack(“<I”, 0x90000000 | ((imm & 3) << 29) | ((imm >> 2) << 5) | rd)
+            imm  = to_va - pc
+            imm  = (imm + 0x200000) & 0x1FFFFF
+            return struct.pack("<I", 0x90000000 | ((imm & 3) << 29) | ((imm >> 2) << 5) | rd)
 
         def bl_insn(pc_va, target_va):
             off   = target_va - pc_va
             imm26 = ((off >> 2) & 0x3FFFFFF)
-            return struct.pack(“<I”, 0x94000000 | imm26)
+            return struct.pack("<I", 0x94000000 | imm26)
 
         def b_insn(pc_va, target_va):
             off   = target_va - pc_va
             imm26 = ((off >> 2) & 0x3FFFFFF)
-            return struct.pack(“<I”, 0x14000000 | imm26)
+            return struct.pack("<I", 0x14000000 | imm26)
 
         # Litpool starts at base+80 (after 80 bytes of code)
         litpool_va = base + 80
@@ -265,22 +265,22 @@ jobs:
         patch += bytes([0xf9, 0x40, 0x00, 0x01])   # LDR X1,[X1,#0]
         patch += b_insn(base+76, objc_msgSend_vaddr)
 
-        assert len(patch) == 80, f”code part is {len(patch)} bytes (expected 80)”
+        assert len(patch) == 80, f"code part is {len(patch)} bytes (expected 80)"
 
         # Litpool
-        patch += struct.pack(“<Q”, sv_selref_vaddr)  # selectVC selref
-        patch += struct.pack(“<Q”, tb_selref_vaddr)  # tabBarController selref
-        patch += struct.pack(“<Q”, si_selref_vaddr)  # setSelectedIndex: selref
-        patch += struct.pack(“<Q”, ss_selref_vaddr)  # signSuccess selref
+        patch += struct.pack("<Q", sv_selref_vaddr)  # selectVC selref
+        patch += struct.pack("<Q", tb_selref_vaddr)  # tabBarController selref
+        patch += struct.pack("<Q", si_selref_vaddr)  # setSelectedIndex: selref
+        patch += struct.pack("<Q", ss_selref_vaddr)  # signSuccess selref
 
-        assert len(patch) == 112, f”patch size {len(patch)} (expected 112)”
+        assert len(patch) == 112, f"patch size {len(patch)} (expected 112)"
 
         data[installclick_imp_foff:installclick_imp_foff + 112] = patch
-        print(f”[+] Wrote {len(patch)}-byte ARM64 patch at file offset {installclick_imp_foff:#x}”)
+        print(f"[+] Wrote {len(patch)}-byte ARM64 patch at file offset {installclick_imp_foff:#x}")
 
-        with open(binary_path, “wb”) as f:
+        with open(binary_path, "wb") as f:
             f.write(data)
-        print(“[+] Binary patched successfully”)
+        print("[+] Binary patched successfully")
         PYEOF
 
     - name: Verify direct binary patch
