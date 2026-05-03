@@ -205,34 +205,46 @@ jobs:
         if selectvc_ivar_offset is None:
             print("[!] selectVC ivar offset not found"); sys.exit(1)
 
-        # Find installClick IMP (try absolute method list first, then relative)
+        # Find installClick IMP
+        # Strategy 1: absolute method list — search entire binary for 8-byte selref pointer
         installclick_imp_vaddr = None
-
-        # Absolute method list: name field = 8-byte pointer to selref
         ic_selref_bytes = struct.pack("<Q", ic_selref_vaddr)
-        p = oc_foff
-        while p < oc_foff + oc_size - 24:
-            if data[p:p+8] == ic_selref_bytes:
-                imp_vm = read_u64(data, p + 16)
-                if imp_vm:
-                    installclick_imp_vaddr = imp_vm
-                    print(f"[+] installClick IMP vm (abs): {imp_vm:#x}")
-                    break
-            p += 1
+        pos = 0
+        hits = []
+        while True:
+            pos = data.find(ic_selref_bytes, pos)
+            if pos < 0: break
+            hits.append(pos); pos += 1
+        print(f"[*] installClick selref ptr found at {len(hits)} file offsets: {[hex(x) for x in hits[:8]]}")
 
-        # Relative method list: name field = i32 relative offset to selref
+        for hit in hits:
+            # hit is the file offset of the name field; IMP is at +16
+            imp_vm = read_u64(data, hit + 16)
+            if imp_vm and vm_to_file(sections, imp_vm):
+                installclick_imp_vaddr = imp_vm
+                print(f"[+] installClick IMP vm (abs): {imp_vm:#x}")
+                break
+
+        # Strategy 2: relative method list — search entire binary for i32 relative ref to selref
         if not installclick_imp_vaddr:
-            p = oc_foff
-            while p < oc_foff + oc_size - 12:
-                name_field_vaddr = oc_vaddr + (p - oc_foff)
-                name_off = read_i32(data, p)
-                if name_off != 0 and (name_field_vaddr + name_off) == ic_selref_vaddr:
-                    imp_off  = read_i32(data, p + 8)
-                    imp_vaddr = (name_field_vaddr + 8) + imp_off
-                    installclick_imp_vaddr = imp_vaddr
-                    print(f"[+] installClick IMP vm (rel): {imp_vaddr:#x}")
-                    break
-                p += 4
+            for seg, sect in sections:
+                foff, vaddr, size = sections[(seg, sect)]
+                if seg not in ('__TEXT', '__DATA', '__DATA_CONST'): continue
+                p = foff
+                while p < foff + size - 12:
+                    name_field_vaddr = vaddr + (p - foff)
+                    name_off = read_i32(data, p)
+                    if name_off != 0:
+                        target = (name_field_vaddr + name_off) & 0xFFFFFFFFFFFFFFFF
+                        if target == ic_selref_vaddr:
+                            imp_off = read_i32(data, p + 8)
+                            imp_vaddr = ((name_field_vaddr + 8) + imp_off) & 0xFFFFFFFFFFFFFFFF
+                            if vm_to_file(sections, imp_vaddr):
+                                installclick_imp_vaddr = imp_vaddr
+                                print(f"[+] installClick IMP vm (rel, {seg},{sect}): {imp_vaddr:#x}")
+                                break
+                    p += 4
+                if installclick_imp_vaddr: break
 
         if not installclick_imp_vaddr:
             print("[!] installClick IMP not found"); sys.exit(1)
