@@ -41,14 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Test read/write
-      run: python3 test_rw.py
-
-    - name: Diagnose binary
-      run: python3 diagnose.py
-
-    - name: Patch binary (simple RET)
-      run: python3 patch_simple_ret.py
+    - name: Patch binary
+      run: python3 patch_complete.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
