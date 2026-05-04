@@ -41,17 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Search for methods in DASignProcessVC
-      run: python3 search_methods.py
-
-    - name: Search for properties in DASignProcessVC
-      run: python3 search_properties.py
-
-    - name: Search for selectors
-      run: python3 search_selectors.py
-
-    - name: Patch binary with auto-redirect
-      run: python3 patch_auto_redirect.py
+    - name: Patch binary - call signSuccess directly
+      run: python3 patch_direct_signsuccess.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
