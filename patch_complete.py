@@ -134,23 +134,39 @@ for i in range(0, text_size - 8, 4):
         if target == ic_selref:
             print(f"[+] Found reference at: {pc:#x}")
 
-            # Find function start
-            for j in range(i, max(0, i - 2048), -4):
+            # Find function start - look for various prologue patterns
+            func_foff = None
+            func_addr = None
+
+            for j in range(i, max(0, i - 4096), -4):
                 insn = r32(data, text_foff + j)
-                if (insn & 0xFFC00000) == 0xA9800000:  # STP with pre-index
+
+                # Common ARM64 function prologues:
+                # STP X29, X30, [SP, #-xx]! (0xA9Bxxxxx)
+                # STP with pre-index writeback
+                if (insn & 0xFFC00000) == 0xA9800000 or (insn & 0xFFC00000) == 0xA9000000:
+                    # Check if it's saving FP/LR or other registers
                     func_foff = text_foff + j
                     func_addr = text_vaddr + j
-                    print(f"[+] Function start at: {func_addr:#x}")
+                    print(f"[+] Function start at: {func_addr:#x} (offset from ref: {i-j} bytes)")
+                    break
 
-                    # Patch with RET
-                    w32(data, func_foff, 0xD65F03C0)
+            if not func_foff:
+                # If no prologue found, patch at the reference location itself
+                print("[!] No standard prologue found, patching at reference location")
+                func_foff = text_foff + i
+                func_addr = pc
 
-                    with open(binary_path, "wb") as f:
-                        f.write(data)
+            # Patch with RET
+            w32(data, func_foff, 0xD65F03C0)
 
-                    print("[+] Patched successfully!")
-                    print("[+] installClick now returns immediately (no-op)")
-                    sys.exit(0)
+            with open(binary_path, "wb") as f:
+                f.write(data)
+
+            print("[+] Patched successfully!")
+            print(f"[+] Patched at file offset: {func_foff:#x}")
+            print("[+] installClick now returns immediately (no-op)")
+            sys.exit(0)
 
 print("[!] Function start not found")
 sys.exit(1)
