@@ -41,8 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Patch binary
-      run: python3 patch_complete.py
+    - name: Patch binary with auto-redirect
+      run: python3 patch_auto_redirect.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
