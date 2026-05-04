@@ -204,12 +204,10 @@ print(f"[+] installClick RET at: {ret_addr:#x}")
 pc = free_space_vaddr
 hook = []
 
-# Save X19 (callee-saved)
-hook.append(0xF81F0FF3)  # STR X19, [SP, #-16]!
+# Save FP, LR, and X0
+hook.append(0xA9BF7BFD)  # STP X29, X30, [SP, #-16]!
 pc += 4
-
-# Save self (X0) to X19
-hook.append(0xAA0003F3)  # MOV X19, X0
+hook.append(0xF81F0FE0)  # STR X0, [SP, #-16]!
 pc += 4
 
 # Load signSuccess selector
@@ -220,8 +218,8 @@ if not insns:
 hook.extend(insns)
 pc += 8
 
-# Restore X0 from X19
-hook.append(0xAA1303E0)  # MOV X0, X19
+# Restore X0 (but keep on stack)
+hook.append(0xF94003E0)  # LDR X0, [SP]
 pc += 4
 
 # Call objc_msgSend
@@ -232,8 +230,10 @@ if not bl:
 hook.append(bl)
 pc += 4
 
-# Restore X19
-hook.append(0xF84107F3)  # LDR X19, [SP], #16
+# Restore stack
+hook.append(0xF84107E0)  # LDR X0, [SP], #16
+pc += 4
+hook.append(0xA8C17BFD)  # LDP X29, X30, [SP], #16
 pc += 4
 
 # RET
