@@ -41,8 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Patch binary - call signSuccess directly
-      run: python3 patch_direct_signsuccess.py
+    - name: Patch binary - make installClick no-op
+      run: python3 patch_simple.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
