@@ -29,18 +29,26 @@ print(f"[+] Binary size: {len(data)} bytes")
 
 # Parse Mach-O header
 magic = r32(data, 0)
-offset = 0 if magic == 0xFEEDFACF else None
 
-if not offset:
+if magic == 0xFEEDFACF:
+    # Single ARM64 binary
+    offset = 0
+    print("[+] Single ARM64 binary")
+elif magic == 0xCAFEBABE:
+    # Fat binary
     narch = struct.unpack(">I", data[4:8])[0]
+    offset = None
     for i in range(narch):
         base = 8 + i * 20
         if struct.unpack(">I", data[base:base+4])[0] == 0x0100000C:
             offset = struct.unpack(">I", data[base+8:base+12])[0]
+            print("[+] Found ARM64 slice in fat binary")
             break
-
-if not offset:
-    print("[!] ARM64 architecture not found")
+    if not offset:
+        print("[!] ARM64 architecture not found in fat binary")
+        sys.exit(1)
+else:
+    print(f"[!] Unknown magic: {magic:#x}")
     sys.exit(1)
 
 print(f"[+] ARM64 slice at offset: {offset:#x}")
