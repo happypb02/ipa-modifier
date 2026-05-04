@@ -44,6 +44,9 @@ jobs:
     - name: Disassemble installClick
       run: python3 disasm_installclick.py
 
+    - name: Disassemble signSuccess
+      run: python3 disasm_signsuccess.py
+
     - name: Patch binary - minimal function
       run: python3 patch_minimal.py
 
