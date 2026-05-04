@@ -16,8 +16,8 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
-    - name: Patch binary with objc_msgSend calls
-      run: python3 patch_objc.py
+    - name: Patch binary (simple RET)
+      run: python3 patch_simple_ret.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
