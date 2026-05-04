@@ -41,6 +41,9 @@ jobs:
           exit 1
         fi
 
+    - name: Search for selectors
+      run: python3 search_selectors.py
+
     - name: Patch binary with auto-redirect
       run: python3 patch_auto_redirect.py
 
