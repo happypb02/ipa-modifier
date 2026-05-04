@@ -171,18 +171,23 @@ if not func_start:
     print("[!] Function start not found")
     sys.exit(1)
 
-# Find last RET
-ret_off = None
-for j in range(func_start, min(text_size, func_start + 4096), 4):
+# Find all RETs in function
+rets = []
+for j in range(func_start, min(text_size, func_start + 8192), 4):
     insn = r32(data, text_foff + j)
     if insn == 0xD65F03C0:
-        ret_off = j
-    elif j > func_start and ((insn & 0xFFC00000) == 0xA9800000 or (insn & 0xFFC00000) == 0xA9000000):
+        rets.append(j)
+    # Stop at next function prologue
+    elif j > func_start + 16 and ((insn & 0xFFC00000) == 0xA9800000 or (insn & 0xFFC00000) == 0xA9000000):
         break
 
-if not ret_off:
-    print("[!] RET not found")
+if not rets:
+    print("[!] No RET found in installClick")
     sys.exit(1)
+
+# Use the last RET (main exit point)
+ret_off = rets[-1]
+print(f"[+] Found {len(rets)} RET(s), using last one")
 
 ret_addr = text_vaddr + ret_off
 print(f"[+] installClick RET at: {ret_addr:#x}")
