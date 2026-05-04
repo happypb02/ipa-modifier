@@ -13,8 +13,33 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Check files
+      run: |
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Files in current directory ==="
+        ls -la
+        echo "=== Check if 2.ipa exists ==="
+        if [ -f "2.ipa" ]; then
+          echo "2.ipa found, size: $(stat -f%z 2.ipa 2>/dev/null || stat -c%s 2.ipa)"
+        else
+          echo "2.ipa NOT found"
+          exit 1
+        fi
+
     - name: Extract IPA
-      run: unzip -q 2.ipa -d temp
+      run: |
+        echo "=== Extracting IPA ==="
+        unzip -q 2.ipa -d temp
+        echo "=== Check extraction ==="
+        ls -la temp/
+        ls -la temp/Payload/
+        if [ -f "temp/Payload/DumpApp.app/DumpApp" ]; then
+          echo "Binary found"
+        else
+          echo "Binary NOT found"
+          exit 1
+        fi
 
     - name: Test read/write
       run: python3 test_rw.py
