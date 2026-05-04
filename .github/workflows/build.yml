@@ -41,14 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Disassemble installClick
-      run: python3 disasm_installclick.py
-
-    - name: Disassemble signSuccess
-      run: python3 disasm_signsuccess.py
-
-    - name: Patch binary - minimal function
-      run: python3 patch_minimal.py
+    - name: Patch with hook in free space
+      run: python3 patch_with_hook.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
