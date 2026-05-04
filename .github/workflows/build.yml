@@ -41,6 +41,9 @@ jobs:
           exit 1
         fi
 
+    - name: Disassemble installClick
+      run: python3 disasm_installclick.py
+
     - name: Patch binary - minimal function
       run: python3 patch_minimal.py
 
