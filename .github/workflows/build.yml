@@ -16,6 +16,9 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
+    - name: Diagnose binary
+      run: python3 diagnose.py
+
     - name: Patch binary (simple RET)
       run: python3 patch_simple_ret.py
 
