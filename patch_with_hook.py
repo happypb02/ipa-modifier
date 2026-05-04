@@ -171,23 +171,31 @@ if not func_start:
     print("[!] Function start not found")
     sys.exit(1)
 
-# Find all RETs in function
+# Find all RETs in function (search up to 8KB or until we see multiple prologues)
 rets = []
+prologue_count = 0
+
 for j in range(func_start, min(text_size, func_start + 8192), 4):
     insn = r32(data, text_foff + j)
+
     if insn == 0xD65F03C0:
         rets.append(j)
-    # Stop at next function prologue
-    elif j > func_start + 16 and ((insn & 0xFFC00000) == 0xA9800000 or (insn & 0xFFC00000) == 0xA9000000):
-        break
+
+    # Count prologues (but don't stop immediately)
+    if j > func_start and ((insn & 0xFFC00000) == 0xA9800000 or (insn & 0xFFC00000) == 0xA9000000):
+        prologue_count += 1
+        # Stop if we've seen 2 prologues and have at least one RET
+        if prologue_count >= 2 and len(rets) > 0:
+            break
 
 if not rets:
     print("[!] No RET found in installClick")
+    print(f"[!] Searched from {text_vaddr + func_start:#x} for {min(8192, text_size - func_start)} bytes")
     sys.exit(1)
 
 # Use the last RET (main exit point)
 ret_off = rets[-1]
-print(f"[+] Found {len(rets)} RET(s), using last one")
+print(f"[+] Found {len(rets)} RET(s), using last one at offset {ret_off:#x}")
 
 ret_addr = text_vaddr + ret_off
 print(f"[+] installClick RET at: {ret_addr:#x}")
