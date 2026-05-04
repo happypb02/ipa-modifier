@@ -41,6 +41,9 @@ jobs:
           exit 1
         fi
 
+    - name: Search for properties in DASignProcessVC
+      run: python3 search_properties.py
+
     - name: Search for selectors
       run: python3 search_selectors.py
 
