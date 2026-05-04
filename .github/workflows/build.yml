@@ -16,6 +16,9 @@ jobs:
     - name: Extract IPA
       run: unzip -q 2.ipa -d temp
 
+    - name: Test read/write
+      run: python3 test_rw.py
+
     - name: Diagnose binary
       run: python3 diagnose.py
 
