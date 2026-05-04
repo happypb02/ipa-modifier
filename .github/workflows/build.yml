@@ -41,8 +41,8 @@ jobs:
           exit 1
         fi
 
-    - name: Patch binary - make installClick no-op
-      run: python3 patch_simple.py
+    - name: Patch binary - minimal function
+      run: python3 patch_minimal.py
 
     - name: Remove old signature
       run: rm -rf temp/Payload/DumpApp.app/_CodeSignature
